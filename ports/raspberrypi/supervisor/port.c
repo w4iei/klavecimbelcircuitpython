@@ -264,32 +264,51 @@ void port_heap_init(void) {
 
 void *port_malloc(size_t size, bool dma_capable) {
     if (!dma_capable && _psram_size > 0) {
+        common_hal_mcu_disable_interrupts();
         void *block = tlsf_malloc(_psram_heap, size);
+        common_hal_mcu_enable_interrupts();
         if (block) {
             return block;
         }
     }
+    common_hal_mcu_disable_interrupts();
     void *block = tlsf_malloc(_heap, size);
+    common_hal_mcu_enable_interrupts();
     return block;
 }
 
 void port_free(void *ptr) {
+    common_hal_mcu_disable_interrupts();
     if (((size_t)ptr) < SRAM_BASE) {
         tlsf_free(_psram_heap, ptr);
     } else {
         tlsf_free(_heap, ptr);
     }
+    common_hal_mcu_enable_interrupts();
 }
 
 void *port_realloc(void *ptr, size_t size, bool dma_capable) {
     if (_psram_size > 0 && ((ptr != NULL && ((size_t)ptr) < SRAM_BASE) || (ptr == NULL && !dma_capable))) {
+        common_hal_mcu_disable_interrupts();
         void *block = tlsf_realloc(_psram_heap, ptr, size);
+        common_hal_mcu_enable_interrupts();
         if (block) {
             return block;
         }
     }
-    return tlsf_realloc(_heap, ptr, size);
+    common_hal_mcu_disable_interrupts();
+    void *new_ptr = tlsf_realloc(_heap, ptr, size);
+    common_hal_mcu_enable_interrupts();
+    return new_ptr;
 }
+
+#if !CIRCUITPY_ALL_MEMORY_DMA_CAPABLE
+bool port_buffer_is_dma_capable(const void *ptr) {
+    // For RP2350, DMA can only access SRAM, not PSRAM
+    // PSRAM addresses are below SRAM_BASE
+    return ptr != NULL && ((size_t)ptr) >= SRAM_BASE;
+}
+#endif
 
 static bool max_size_walker(void *ptr, size_t size, int used, void *user) {
     size_t *max_size = (size_t *)user;
@@ -403,7 +422,6 @@ safe_mode_t port_init(void) {
 
 void reset_port(void) {
     #if CIRCUITPY_BUSIO
-    reset_spi();
     reset_uart();
     #endif
 
@@ -434,8 +452,6 @@ void reset_port(void) {
     #if CIRCUITPY_WIFI
     wifi_reset();
     #endif
-
-    reset_all_pins();
 }
 
 void reset_to_bootloader(void) {

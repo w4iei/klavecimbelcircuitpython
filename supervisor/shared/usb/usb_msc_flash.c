@@ -5,7 +5,6 @@
 // SPDX-License-Identifier: MIT
 
 #include "tusb.h"
-// // #include "supervisor/flash.h"
 
 // For updating fatfs's cache
 #include "extmod/vfs.h"
@@ -14,6 +13,7 @@
 #include "lib/oofatfs/ff.h"
 #include "py/gc.h"
 #include "py/mpstate.h"
+#include "py/runtime.h"
 
 #include "shared-module/storage/__init__.h"
 #include "supervisor/filesystem.h"
@@ -28,7 +28,7 @@
 #define SAVES_COUNT 0
 #endif
 
-#if CIRCUITPY_SDCARDIO
+#if CIRCUITPY_SDCARD_USB
 #include "shared-module/sdcardio/__init__.h"
 
 #define SDCARD_COUNT 1
@@ -44,6 +44,11 @@
 static bool ejected[LUN_COUNT] = { [0 ... (LUN_COUNT - 1)] = true};
 static bool eject_once[LUN_COUNT] = { [0 ... (LUN_COUNT - 1)] = false};
 static bool locked[LUN_COUNT] = { [0 ... (LUN_COUNT - 1)] = false};
+
+// Set to true if a write was in a file data or metadata area,
+// as opposed to in the filesystem metadata area (e.g., dirty bit).
+// Used to determine if an auto-reload is warranted.
+static bool content_write[LUN_COUNT] = { [0 ... (LUN_COUNT - 1)] = false};
 
 #include "tusb.h"
 
@@ -132,7 +137,8 @@ static fs_user_mount_t *get_vfs(int lun) {
     if (lun == SAVES_LUN) {
         const char *path_under_mount;
         fs_user_mount_t *saves = filesystem_for_path("/saves", &path_under_mount);
-        if (saves != root && (saves->blockdev.flags & MP_BLOCKDEV_FLAG_NATIVE) != 0 && gc_nbytes(saves) == 0) {
+        if (saves != root &&
+            (saves->blockdev.flags & MP_BLOCKDEV_FLAG_NATIVE) != 0 && !gc_ptr_on_heap(saves)) {
             return saves;
         }
     }
@@ -141,7 +147,15 @@ static fs_user_mount_t *get_vfs(int lun) {
     if (lun == SDCARD_LUN) {
         const char *path_under_mount;
         fs_user_mount_t *sdcard = filesystem_for_path("/sd", &path_under_mount);
-        if (sdcard != root && (sdcard->blockdev.flags & MP_BLOCKDEV_FLAG_NATIVE) != 0) {
+        // If sdcard ("/sd") is on the root filesystem, nothing has been mounted there, so don't
+        // return it as a separate filesystem.
+        // If the SD card was automounted at startup, then it persists across VMs and its fs_user_mount_t is
+        // not on the heap.
+        // If the SD card filesystem was mounted by the user using heap objects,
+        // it should not be used when the VM has stopped running.
+        if ((sdcard != root) &&
+            ((sdcard->blockdev.flags & MP_BLOCKDEV_FLAG_NATIVE) != 0) &&
+            (vm_is_running() || !gc_ptr_on_heap(sdcard))) {
             return sdcard;
         } else {
             // Clear any ejected state so that a re-insert causes it to reappear.
@@ -243,7 +257,7 @@ bool tud_msc_is_writable_cb(uint8_t lun) {
     if (vfs == NULL) {
         return false;
     }
-    if (vfs->blockdev.writeblocks[0] == MP_OBJ_NULL || !filesystem_is_writable_by_usb(vfs)) {
+    if (!filesystem_is_writable_by_usb(vfs)) {
         return false;
     }
     // Lock the blockdev once we say we're writable.
@@ -290,21 +304,31 @@ int32_t tud_msc_write10_cb(uint8_t lun, uint32_t lba, uint32_t offset, uint8_t *
     if (vfs == NULL) {
         return -1;
     }
+
     disk_write(vfs, buffer, lba, block_count);
     // Since by getting here we assume the mount is read-only to
-    // MicroPython let's update the cached FatFs sector if it's the one
+    // CircuitPython let's update the cached FatFs sector if it's the one
     // we just wrote.
+    if
     #if FF_MAX_SS != FF_MIN_SS
-    if (vfs->fatfs.ssize == MSC_FLASH_BLOCK_SIZE) {
+    (vfs->fatfs.ssize == MSC_FLASH_BLOCK_SIZE)
     #else
     // The compiler can optimize this away.
-    if (FF_MAX_SS == FILESYSTEM_BLOCK_SIZE) {
-        #endif
+    (FF_MAX_SS == FILESYSTEM_BLOCK_SIZE)
+    #endif
+    {
         if (lba == vfs->fatfs.winsect && lba > 0) {
             memcpy(vfs->fatfs.win,
                 buffer + MSC_FLASH_BLOCK_SIZE * (vfs->fatfs.winsect - lba),
                 MSC_FLASH_BLOCK_SIZE);
         }
+    }
+
+    // A write to an lba below fatbase is in the filesystem metadata (BPB) area or the "Reserved Region",
+    // and is probably setting or clearing the dirty bit. This should not trigger auto-reload.
+    // All other writes will trigger auto-reload.
+    if (lba >= vfs->fatfs.fatbase) {
+        content_write[lun] = true;
     }
 
     return block_count * MSC_FLASH_BLOCK_SIZE;
@@ -313,11 +337,17 @@ int32_t tud_msc_write10_cb(uint8_t lun, uint32_t lba, uint32_t offset, uint8_t *
 // Callback invoked when WRITE10 command is completed (status received and accepted by host).
 // used to flush any pending cache.
 void tud_msc_write10_complete_cb(uint8_t lun) {
-    (void)lun;
-
-    // This write is complete; initiate an autoreload.
     autoreload_resume(AUTORELOAD_SUSPEND_USB);
-    autoreload_trigger();
+
+    // This write is complete; initiate an autoreload if this was a file data or metadata write,
+    // not just a dirty-bit write.
+    if (content_write[lun] &&
+        // Fast path: lun == 0 is CIRCUITPY, which can always trigger auto-reload if enabled.
+        // Don't autoreload if this lun was mounted by the user: that will cause a VM stop and an unmount.
+        (lun == 0 || !gc_ptr_on_heap(get_vfs(lun)))) {
+        autoreload_trigger();
+        content_write[lun] = false;
+    }
 }
 
 // Invoked when received SCSI_CMD_INQUIRY
@@ -337,7 +367,7 @@ bool tud_msc_test_unit_ready_cb(uint8_t lun) {
         return false;
     }
 
-    #if CIRCUITPY_SDCARDIO
+    #ifdef SDCARD_LUN
     if (lun == SDCARD_LUN) {
         automount_sd_card();
     }
