@@ -40,6 +40,31 @@ Official binaries for all supported boards are available through
 continuous builds. Full release notes are available through
 `GitHub releases <https://github.com/adafruit/circuitpython/releases>`_ as well.
 
+Fork Notes (RP2350A PSRAM)
+---------------------------
+
+This repository is a fork to support an RP2350A board with external PSRAM
+(``photon_rp2350a_main_board``). PSRAM circuit select is wired to GPIO0, so it requires a board-specific build that
+enables PSRAM support.
+
+Build steps (verified on macOS, using ``gmake`` and the official guide:
+https://learn.adafruit.com/building-circuitpython/macos):
+
+::
+
+    gmake fetch-all-submodules
+    gmake -C mpy-cross
+    gmake -C ports/raspberrypi BOARD=photon_rp2350a_main_board
+
+Clean just this board build:
+
+::
+
+    gmake -C ports/raspberrypi BOARD=photon_rp2350a_main_board clean
+
+Latest UF2 files from this project are included in the
+`github.com/w4iei/photon <https://github.com/w4iei/photon>`_ repository.
+
 Documentation
 -------------
 
