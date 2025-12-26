@@ -16,8 +16,8 @@
 //| class RS485:
 //|     """Fast RS485 framing with CRC32 for photon boards.
 //|
-//|     Use :meth:`process` to auto-reply to common request frames, or
-//|     :meth:`read_frames`/:meth:`send_frame` to manage framing in Python.
+//|     Use :meth:`set_auto_reply` and :meth:`add_auto_reply` to configure
+//|     request/response pairs handled in C when :meth:`read_frames` is called.
 //|     """
 //|
 //|     def __init__(
@@ -109,6 +109,28 @@ static void check_for_deinit(photon_rs485_rs485_obj_t *self) {
     }
 }
 
+static void photon_rs485_clear_auto_replies(photon_rs485_rs485_obj_t *self) {
+    self->auto_reply_entries = mp_obj_new_list(0, NULL);
+    self->auto_reply_enabled = false;
+}
+
+static void photon_rs485_add_auto_reply(photon_rs485_rs485_obj_t *self,
+    uint8_t request_type, uint8_t response_type, mp_obj_t payload_obj) {
+    mp_buffer_info_t payload_buf;
+    mp_get_buffer_raise(payload_obj, &payload_buf, MP_BUFFER_READ);
+    if (payload_buf.len > self->max_payload) {
+        mp_raise_ValueError(MP_ERROR_TEXT("payload too large"));
+    }
+
+    mp_obj_t entry_items[3] = {
+        MP_OBJ_NEW_SMALL_INT(request_type),
+        MP_OBJ_NEW_SMALL_INT(response_type),
+        payload_obj,
+    };
+    mp_obj_list_append(self->auto_reply_entries, mp_obj_new_tuple(3, entry_items));
+    self->auto_reply_enabled = true;
+}
+
 //|     def send_frame(self, frame_type: int, target_id: int, payload: ReadableBuffer, seq: int) -> None:
 //|         """Send a framed payload with CRC32.
 //|
@@ -156,22 +178,21 @@ static mp_obj_t photon_rs485_obj_read_frames(mp_obj_t self_in) {
 }
 MP_DEFINE_CONST_FUN_OBJ_1(photon_rs485_read_frames_obj, photon_rs485_obj_read_frames);
 
-//|     def process(self, latest_values, scan_times: Optional[Sequence[float]] = None) -> int:
-//|         \"\"\"Read frames and auto-reply to supported requests.
+//|     def set_auto_reply(self, request_type: int, response_type: int, payload: ReadableBuffer | None) -> None:
+//|         """Configure auto-replies for ``read_frames``.
 //|
-//|         ``latest_values`` may be a list/tuple of ints (packed as little-endian
-//|         uint16 values), or a bytes-like object copied as-is.
-//|
-//|         ``scan_times`` should be a sequence of ``time.monotonic()`` floats
-//|         (or ``None``). It is used to compute a scan rate for stats replies.
-//|         \"\"\"
+//|         Passing ``None`` disables auto-replies and clears any existing entries.
+//|         Use :meth:`add_auto_reply` to register additional responses. The
+//|         payload can be a ``bytearray`` to update contents in-place.
+//|         """
 //|         ...
 //|
-static mp_obj_t photon_rs485_obj_process(size_t n_args, const mp_obj_t *pos_args, mp_map_t *kw_args) {
-    enum { ARG_latest_values, ARG_scan_times };
+static mp_obj_t photon_rs485_obj_set_auto_reply(size_t n_args, const mp_obj_t *pos_args, mp_map_t *kw_args) {
+    enum { ARG_request_type, ARG_response_type, ARG_payload };
     static const mp_arg_t allowed_args[] = {
-        { MP_QSTR_latest_values, MP_ARG_REQUIRED | MP_ARG_OBJ },
-        { MP_QSTR_scan_times, MP_ARG_KW_ONLY | MP_ARG_OBJ, {.u_obj = mp_const_none} },
+        { MP_QSTR_request_type, MP_ARG_REQUIRED | MP_ARG_INT },
+        { MP_QSTR_response_type, MP_ARG_REQUIRED | MP_ARG_INT },
+        { MP_QSTR_payload, MP_ARG_REQUIRED | MP_ARG_OBJ },
     };
 
     photon_rs485_rs485_obj_t *self = MP_OBJ_TO_PTR(pos_args[0]);
@@ -180,11 +201,45 @@ static mp_obj_t photon_rs485_obj_process(size_t n_args, const mp_obj_t *pos_args
     mp_arg_val_t args[MP_ARRAY_SIZE(allowed_args)];
     mp_arg_parse_all(n_args - 1, pos_args + 1, kw_args, MP_ARRAY_SIZE(allowed_args), allowed_args, args);
 
-    mp_int_t handled = common_hal_photon_rs485_process(self, args[ARG_latest_values].u_obj,
-        args[ARG_scan_times].u_obj);
-    return MP_OBJ_NEW_SMALL_INT(handled);
+    if (args[ARG_payload].u_obj == mp_const_none) {
+        photon_rs485_clear_auto_replies(self);
+        return mp_const_none;
+    }
+
+    uint8_t request_type = (uint8_t)mp_arg_validate_int_range(args[ARG_request_type].u_int, 0, 0xFF, MP_QSTR_request_type);
+    uint8_t response_type = (uint8_t)mp_arg_validate_int_range(args[ARG_response_type].u_int, 0, 0xFF, MP_QSTR_response_type);
+
+    photon_rs485_clear_auto_replies(self);
+    photon_rs485_add_auto_reply(self, request_type, response_type, args[ARG_payload].u_obj);
+    return mp_const_none;
 }
-MP_DEFINE_CONST_FUN_OBJ_KW(photon_rs485_process_obj, 1, photon_rs485_obj_process);
+MP_DEFINE_CONST_FUN_OBJ_KW(photon_rs485_set_auto_reply_obj, 1, photon_rs485_obj_set_auto_reply);
+
+//|     def add_auto_reply(self, request_type: int, response_type: int, payload: ReadableBuffer) -> None:
+//|         """Register an additional auto-reply handler for ``read_frames``."""
+//|         ...
+//|
+static mp_obj_t photon_rs485_obj_add_auto_reply(size_t n_args, const mp_obj_t *pos_args, mp_map_t *kw_args) {
+    enum { ARG_request_type, ARG_response_type, ARG_payload };
+    static const mp_arg_t allowed_args[] = {
+        { MP_QSTR_request_type, MP_ARG_REQUIRED | MP_ARG_INT },
+        { MP_QSTR_response_type, MP_ARG_REQUIRED | MP_ARG_INT },
+        { MP_QSTR_payload, MP_ARG_REQUIRED | MP_ARG_OBJ },
+    };
+
+    photon_rs485_rs485_obj_t *self = MP_OBJ_TO_PTR(pos_args[0]);
+    check_for_deinit(self);
+
+    mp_arg_val_t args[MP_ARRAY_SIZE(allowed_args)];
+    mp_arg_parse_all(n_args - 1, pos_args + 1, kw_args, MP_ARRAY_SIZE(allowed_args), allowed_args, args);
+
+    uint8_t request_type = (uint8_t)mp_arg_validate_int_range(args[ARG_request_type].u_int, 0, 0xFF, MP_QSTR_request_type);
+    uint8_t response_type = (uint8_t)mp_arg_validate_int_range(args[ARG_response_type].u_int, 0, 0xFF, MP_QSTR_response_type);
+
+    photon_rs485_add_auto_reply(self, request_type, response_type, args[ARG_payload].u_obj);
+    return mp_const_none;
+}
+MP_DEFINE_CONST_FUN_OBJ_KW(photon_rs485_add_auto_reply_obj, 1, photon_rs485_obj_add_auto_reply);
 
 static const mp_rom_map_elem_t photon_rs485_locals_dict_table[] = {
     { MP_ROM_QSTR(MP_QSTR_deinit), MP_ROM_PTR(&photon_rs485_deinit_obj) },
@@ -192,7 +247,8 @@ static const mp_rom_map_elem_t photon_rs485_locals_dict_table[] = {
     { MP_ROM_QSTR(MP_QSTR___exit__), MP_ROM_PTR(&default___exit___obj) },
     { MP_ROM_QSTR(MP_QSTR_send_frame), MP_ROM_PTR(&photon_rs485_send_frame_obj) },
     { MP_ROM_QSTR(MP_QSTR_read_frames), MP_ROM_PTR(&photon_rs485_read_frames_obj) },
-    { MP_ROM_QSTR(MP_QSTR_process), MP_ROM_PTR(&photon_rs485_process_obj) },
+    { MP_ROM_QSTR(MP_QSTR_set_auto_reply), MP_ROM_PTR(&photon_rs485_set_auto_reply_obj) },
+    { MP_ROM_QSTR(MP_QSTR_add_auto_reply), MP_ROM_PTR(&photon_rs485_add_auto_reply_obj) },
 };
 static MP_DEFINE_CONST_DICT(photon_rs485_locals_dict, photon_rs485_locals_dict_table);
 

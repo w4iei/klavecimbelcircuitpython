@@ -56,3 +56,4 @@ the following libraries.
 
    ../../shared-bindings/micropython/index.rst
    photon_rs485.rst
+   photon_sensorscan.rst

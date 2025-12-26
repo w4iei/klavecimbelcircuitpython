@@ -6,6 +6,8 @@
 
 #pragma once
 
+#include <stdbool.h>
+
 #include "common-hal/busio/UART.h"
 #include "common-hal/microcontroller/Pin.h"
 #include "py/obj.h"
@@ -25,6 +27,8 @@ typedef struct {
     size_t tx_buffer_capacity;
     int dma_tx_channel;
     dma_channel_config dma_tx_cfg;
+    bool auto_reply_enabled;
+    mp_obj_t auto_reply_entries;
 } photon_rs485_rs485_obj_t;
 
 void common_hal_photon_rs485_construct(photon_rs485_rs485_obj_t *self,
@@ -37,5 +41,3 @@ void common_hal_photon_rs485_send_frame(photon_rs485_rs485_obj_t *self,
     uint8_t frame_type, uint8_t target_id,
     const uint8_t *payload, size_t payload_len, uint16_t seq);
 mp_obj_t common_hal_photon_rs485_read_frames(photon_rs485_rs485_obj_t *self);
-mp_int_t common_hal_photon_rs485_process(photon_rs485_rs485_obj_t *self,
-    mp_obj_t latest_values, mp_obj_t scan_times);

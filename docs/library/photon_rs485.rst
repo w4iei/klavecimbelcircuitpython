@@ -1,7 +1,7 @@
 photon_rs485
 =============
 
-Photon-specific RS485 framing helpers with CRC32 and optional auto-reply.
+Photon-specific RS485 framing helpers with CRC32.
 
 This module is included only on boards that set ``CIRCUITPY_PHOTON_RS485 = 1``
 in their ``mpconfigboard.mk`` (for example,
@@ -12,39 +12,12 @@ Overview
 --------
 
 ``photon_rs485`` wraps a UART and a DE (driver enable) pin to implement a simple
-framed protocol with a fixed preamble and CRC32. It supports two operating
-modes:
-
-- **Auto-reply (C)** via :py:meth:`photon_rs485.RS485.process`, which handles
-  ping/data/stats requests without Python loops.
-- **Manual framing (Python)** via :py:meth:`photon_rs485.RS485.read_frames` and
-  :py:meth:`photon_rs485.RS485.send_frame`.
+framed protocol with a fixed preamble and CRC32. Use
+:py:meth:`photon_rs485.RS485.read_frames` and
+:py:meth:`photon_rs485.RS485.send_frame` to manage framing in Python, or set a
+one or more auto-reply handlers for request/response polling.
 
 The TX path uses DMA on RP2350 to reduce CPU overhead.
-
-Quick start (auto-reply)
-------------------------
-
-.. code-block:: python
-
-    import board
-    import photon_rs485
-
-    latest_values = [0] * 32
-    scan_times = []
-
-    bus = photon_rs485.RS485(
-        tx=board.TX,
-        rx=board.RX,
-        de=board.DE,
-        device_id=photon_rs485.DEVICE_MAIN,
-        baudrate=2000000,
-        tx_enable_delay_us=12,
-    )
-
-    while True:
-        # update latest_values and scan_times in your own code
-        bus.process(latest_values, scan_times)
 
 Manual framing
 --------------
@@ -72,10 +45,14 @@ API summary
 
    Send a framed payload with CRC32.
 
-.. method:: photon_rs485.RS485.process(latest_values, scan_times=None)
+.. method:: photon_rs485.RS485.set_auto_reply(request_type, response_type, payload)
 
-   Auto-reply to common request frames in C. ``latest_values`` may be a list of
-   ints (packed as little-endian uint16) or a bytes-like object copied as-is.
+   Configure auto-replies for ``read_frames``. Pass ``None`` to disable and
+   clear any existing entries. Use a ``bytearray`` to update contents in place.
+
+.. method:: photon_rs485.RS485.add_auto_reply(request_type, response_type, payload)
+
+   Register an additional auto-reply handler for ``read_frames``.
 
 Frame constants
 ---------------
@@ -85,4 +62,8 @@ Frame constants
 - ``FRAME_TYPE_PING`` / ``FRAME_TYPE_PONG``
 - ``FRAME_TYPE_DATA_REQ`` / ``FRAME_TYPE_DATA_RESP``
 - ``FRAME_TYPE_STATS_REQ`` / ``FRAME_TYPE_STATS_RESP``
+- ``FRAME_TYPE_EVENT`` / ``FRAME_TYPE_EVENT_ACK``
+- ``FRAME_TYPE_CFG_SET`` / ``FRAME_TYPE_CFG_ACK``
+- ``FRAME_TYPE_MINMAX_REQ`` / ``FRAME_TYPE_MINMAX_RESP``
+- ``FRAME_TYPE_TRACE_REQ`` / ``FRAME_TYPE_TRACE_RESP``
 - ``DEVICE_MAIN`` / ``DEVICE_SECONDARY_1`` .. ``DEVICE_SECONDARY_5``

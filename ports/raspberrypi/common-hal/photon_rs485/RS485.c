@@ -10,7 +10,6 @@
 
 #include "shared-bindings/busio/UART.h"
 #include "shared-bindings/microcontroller/__init__.h"
-#include "supervisor/shared/tick.h"
 
 #include "py/mperrno.h"
 #include "py/obj.h"
@@ -26,13 +25,6 @@
 #define FRAME_PREAMBLE_LEN (4)
 #define FRAME_HEADER_LEN (10)
 #define FRAME_TRAILER_LEN (4)
-
-#define FRAME_TYPE_PING ((uint8_t)'P')
-#define FRAME_TYPE_PONG ((uint8_t)'O')
-#define FRAME_TYPE_DATA_REQ ((uint8_t)'R')
-#define FRAME_TYPE_DATA_RESP ((uint8_t)'D')
-#define FRAME_TYPE_STATS_REQ ((uint8_t)'S')
-#define FRAME_TYPE_STATS_RESP ((uint8_t)'s')
 
 static const uint8_t photon_rs485_preamble[FRAME_PREAMBLE_LEN] = { 0xA5, 0x5A, 0xC3, 0x3C };
 
@@ -138,62 +130,6 @@ static void photon_rs485_send_prepared(photon_rs485_rs485_obj_t *self, size_t to
     gpio_put(self->de_pin, false);
 }
 
-static size_t photon_rs485_build_values_payload(photon_rs485_rs485_obj_t *self, mp_obj_t values_obj) {
-    mp_buffer_info_t bufinfo;
-    if (mp_get_buffer(values_obj, &bufinfo, MP_BUFFER_READ)) {
-        if (bufinfo.len > self->max_payload) {
-            mp_raise_ValueError(MP_ERROR_TEXT("payload too large"));
-        }
-        memcpy(self->tx_buffer + FRAME_HEADER_LEN, bufinfo.buf, bufinfo.len);
-        return bufinfo.len;
-    }
-
-    size_t values_len = 0;
-    mp_obj_t *values_items = NULL;
-    mp_obj_get_array(values_obj, &values_len, &values_items);
-    size_t payload_len = values_len * 2;
-    if (payload_len > self->max_payload) {
-        mp_raise_ValueError(MP_ERROR_TEXT("payload too large"));
-    }
-
-    uint8_t *payload = self->tx_buffer + FRAME_HEADER_LEN;
-    for (size_t i = 0; i < values_len; i++) {
-        uint16_t value = (uint16_t)mp_obj_get_int(values_items[i]);
-        payload[i * 2] = (uint8_t)(value & 0xFF);
-        payload[i * 2 + 1] = (uint8_t)((value >> 8) & 0xFF);
-    }
-    return payload_len;
-}
-
-static uint16_t photon_rs485_stats_rate_tenths(mp_obj_t scan_times_obj) {
-    if (scan_times_obj == mp_const_none) {
-        return 0;
-    }
-
-    size_t times_len = 0;
-    mp_obj_t *times_items = NULL;
-    mp_obj_get_array(scan_times_obj, &times_len, &times_items);
-    if (times_len == 0) {
-        return 0;
-    }
-
-    mp_float_t first = mp_obj_get_float(times_items[0]);
-    mp_float_t now = (mp_float_t)(supervisor_ticks_ms64() / 1000.0f);
-    mp_float_t elapsed = now - first;
-    if (elapsed < 0.001f) {
-        elapsed = 0.001f;
-    }
-    mp_float_t rate = (mp_float_t)times_len / elapsed;
-    mp_int_t rate_tenths = (mp_int_t)(rate * 10.0f + 0.5f);
-    if (rate_tenths < 0) {
-        rate_tenths = 0;
-    }
-    if (rate_tenths > 0xFFFF) {
-        rate_tenths = 0xFFFF;
-    }
-    return (uint16_t)rate_tenths;
-}
-
 void common_hal_photon_rs485_construct(photon_rs485_rs485_obj_t *self,
     const mcu_pin_obj_t *tx, const mcu_pin_obj_t *rx, const mcu_pin_obj_t *de,
     uint32_t baudrate, uint8_t device_id, uint16_t max_payload,
@@ -247,6 +183,9 @@ void common_hal_photon_rs485_construct(photon_rs485_rs485_obj_t *self,
     channel_config_set_write_increment(&self->dma_tx_cfg, false);
     channel_config_set_transfer_data_size(&self->dma_tx_cfg, DMA_SIZE_8);
     channel_config_set_dreq(&self->dma_tx_cfg, UART_DREQ_NUM(self->uart.uart, true));
+
+    self->auto_reply_enabled = false;
+    self->auto_reply_entries = mp_obj_new_list(0, NULL);
 }
 
 bool common_hal_photon_rs485_deinited(photon_rs485_rs485_obj_t *self) {
@@ -352,6 +291,31 @@ mp_obj_t common_hal_photon_rs485_read_frames(photon_rs485_rs485_obj_t *self) {
         }
 
         bool accept = (self->device_id == 0) || (target_id == 0) || (target_id == self->device_id);
+        bool addressed = (target_id == self->device_id || target_id == 0);
+        if (self->auto_reply_enabled && addressed) {
+            size_t reply_count = 0;
+            mp_obj_t *reply_items = NULL;
+            mp_obj_get_array(self->auto_reply_entries, &reply_count, &reply_items);
+            for (size_t i = reply_count; i > 0; --i) {
+                mp_obj_t *entry_items = NULL;
+                mp_obj_get_array_fixed_n(reply_items[i - 1], 3, &entry_items);
+                uint8_t request_type = (uint8_t)mp_obj_get_int(entry_items[0]);
+                if (frame_type != request_type) {
+                    continue;
+                }
+                uint8_t response_type = (uint8_t)mp_obj_get_int(entry_items[1]);
+                mp_obj_t payload_obj = entry_items[2];
+                mp_buffer_info_t reply_buf;
+                mp_get_buffer_raise(payload_obj, &reply_buf, MP_BUFFER_READ);
+                if (reply_buf.len > self->max_payload) {
+                    mp_raise_ValueError(MP_ERROR_TEXT("payload too large"));
+                }
+                size_t reply_len = photon_rs485_prepare_frame(self, response_type,
+                    self->device_id, reply_buf.buf, reply_buf.len, seq, false);
+                photon_rs485_send_prepared(self, reply_len);
+                break;
+            }
+        }
         if (accept) {
             mp_obj_t payload_obj = mp_obj_new_bytes(self->buffer + payload_start, length);
             mp_obj_t items[4] = {
@@ -376,104 +340,4 @@ mp_obj_t common_hal_photon_rs485_read_frames(photon_rs485_rs485_obj_t *self) {
     }
 
     return frames;
-}
-
-mp_int_t common_hal_photon_rs485_process(photon_rs485_rs485_obj_t *self,
-    mp_obj_t latest_values, mp_obj_t scan_times) {
-
-    photon_rs485_fill_rx_buffer(self);
-
-    mp_int_t replies = 0;
-    size_t offset = 0;
-    size_t max_frame_len = FRAME_HEADER_LEN + (size_t)self->max_payload + FRAME_TRAILER_LEN;
-
-    while (true) {
-        size_t remaining = self->buffer_len - offset;
-        if (remaining < FRAME_HEADER_LEN) {
-            break;
-        }
-
-        int32_t preamble_index = photon_rs485_find_preamble(self->buffer, offset, self->buffer_len);
-        if (preamble_index < 0) {
-            if (self->buffer_len > (FRAME_PREAMBLE_LEN - 1)) {
-                offset = self->buffer_len - (FRAME_PREAMBLE_LEN - 1);
-            }
-            break;
-        }
-
-        if ((size_t)preamble_index > offset) {
-            offset = (size_t)preamble_index;
-            remaining = self->buffer_len - offset;
-            if (remaining < FRAME_HEADER_LEN) {
-                break;
-            }
-        }
-
-        uint8_t frame_type = self->buffer[offset + 4];
-        uint8_t target_id = self->buffer[offset + 5];
-        uint16_t length = (uint16_t)(self->buffer[offset + 6] | (self->buffer[offset + 7] << 8));
-        uint16_t seq = (uint16_t)(self->buffer[offset + 8] | (self->buffer[offset + 9] << 8));
-
-        size_t total_len = FRAME_HEADER_LEN + (size_t)length + FRAME_TRAILER_LEN;
-        if (length > self->max_payload || total_len > max_frame_len) {
-            offset += 1;
-            continue;
-        }
-
-        if (remaining < total_len) {
-            break;
-        }
-
-        size_t payload_start = offset + FRAME_HEADER_LEN;
-        size_t crc_start = payload_start + length;
-
-        uint32_t crc_rx = (uint32_t)(self->buffer[crc_start] |
-            (self->buffer[crc_start + 1] << 8) |
-            (self->buffer[crc_start + 2] << 16) |
-            (self->buffer[crc_start + 3] << 24));
-        uint32_t crc_calc = photon_rs485_crc32(self->buffer + payload_start, length);
-        if (crc_rx != crc_calc) {
-            offset += 1;
-            continue;
-        }
-
-        bool accept = (self->device_id == 0) || (target_id == 0) || (target_id == self->device_id);
-        bool addressed = (target_id == self->device_id || target_id == 0);
-        if (accept && addressed) {
-            if (frame_type == FRAME_TYPE_PING) {
-                size_t reply_len = photon_rs485_prepare_frame(self, FRAME_TYPE_PONG,
-                    self->device_id, NULL, 0, seq, false);
-                photon_rs485_send_prepared(self, reply_len);
-                replies += 1;
-            } else if (frame_type == FRAME_TYPE_DATA_REQ) {
-                size_t payload_len = photon_rs485_build_values_payload(self, latest_values);
-                size_t reply_len = photon_rs485_prepare_frame(self, FRAME_TYPE_DATA_RESP,
-                    self->device_id, self->tx_buffer + FRAME_HEADER_LEN, payload_len, seq, true);
-                photon_rs485_send_prepared(self, reply_len);
-                replies += 1;
-            } else if (frame_type == FRAME_TYPE_STATS_REQ) {
-                uint16_t rate_tenths = photon_rs485_stats_rate_tenths(scan_times);
-                uint8_t *payload = self->tx_buffer + FRAME_HEADER_LEN;
-                payload[0] = (uint8_t)(rate_tenths & 0xFF);
-                payload[1] = (uint8_t)((rate_tenths >> 8) & 0xFF);
-                size_t reply_len = photon_rs485_prepare_frame(self, FRAME_TYPE_STATS_RESP,
-                    self->device_id, payload, 2, seq, true);
-                photon_rs485_send_prepared(self, reply_len);
-                replies += 1;
-            }
-        }
-
-        offset += total_len;
-    }
-
-    if (offset > 0) {
-        if (offset < self->buffer_len) {
-            memmove(self->buffer, self->buffer + offset, self->buffer_len - offset);
-            self->buffer_len -= offset;
-        } else {
-            self->buffer_len = 0;
-        }
-    }
-
-    return replies;
 }

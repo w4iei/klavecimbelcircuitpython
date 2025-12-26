@@ -21,5 +21,3 @@ void common_hal_photon_rs485_send_frame(photon_rs485_rs485_obj_t *self,
     uint8_t frame_type, uint8_t target_id,
     const uint8_t *payload, size_t payload_len, uint16_t seq);
 mp_obj_t common_hal_photon_rs485_read_frames(photon_rs485_rs485_obj_t *self);
-mp_int_t common_hal_photon_rs485_process(photon_rs485_rs485_obj_t *self,
-    mp_obj_t latest_values, mp_obj_t scan_times);

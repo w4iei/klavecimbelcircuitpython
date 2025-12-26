@@ -15,32 +15,12 @@ MP_DEFINE_BYTES_OBJ(photon_rs485_frame_preamble_obj, photon_rs485_frame_preamble
 
 //| """Photon-specific RS485 framing helpers.
 //|
-//| This module provides a fast, C-backed RS485 framing driver with CRC32 and
-//| optional auto-reply handling for common request/response frames used on
-//| photon RP2350A boards.
+//| This module provides a fast, C-backed RS485 framing driver with CRC32 for
+//| photon RP2350A boards. It can auto-reply to multiple configured request types
+//| when :py:meth:`photon_rs485.RS485.read_frames` is called.
 //|
 //| Enable it per-board by setting ``CIRCUITPY_PHOTON_RS485 = 1`` in that
 //| board's ``mpconfigboard.mk``.
-//|
-//| Example (auto-reply in C)::
-//|
-//|     import board
-//|     import photon_rs485
-//|
-//|     latest_values = [0] * 32
-//|     scan_times = []
-//|
-//|     bus = photon_rs485.RS485(
-//|         tx=board.TX,
-//|         rx=board.RX,
-//|         de=board.DE,
-//|         device_id=photon_rs485.DEVICE_MAIN,
-//|         baudrate=2000000,
-//|     )
-//|
-//|     while True:
-//|         # update latest_values and scan_times in your own code
-//|         bus.process(latest_values, scan_times)
 //|
 //| Example (manual framing in Python)::
 //|
@@ -63,6 +43,14 @@ static const mp_rom_map_elem_t photon_rs485_module_globals_table[] = {
     { MP_ROM_QSTR(MP_QSTR_FRAME_TYPE_DATA_RESP), MP_ROM_INT('D') },
     { MP_ROM_QSTR(MP_QSTR_FRAME_TYPE_STATS_REQ), MP_ROM_INT('S') },
     { MP_ROM_QSTR(MP_QSTR_FRAME_TYPE_STATS_RESP), MP_ROM_INT('s') },
+    { MP_ROM_QSTR(MP_QSTR_FRAME_TYPE_EVENT), MP_ROM_INT('E') },
+    { MP_ROM_QSTR(MP_QSTR_FRAME_TYPE_EVENT_ACK), MP_ROM_INT('A') },
+    { MP_ROM_QSTR(MP_QSTR_FRAME_TYPE_CFG_SET), MP_ROM_INT('C') },
+    { MP_ROM_QSTR(MP_QSTR_FRAME_TYPE_CFG_ACK), MP_ROM_INT('c') },
+    { MP_ROM_QSTR(MP_QSTR_FRAME_TYPE_MINMAX_REQ), MP_ROM_INT('M') },
+    { MP_ROM_QSTR(MP_QSTR_FRAME_TYPE_MINMAX_RESP), MP_ROM_INT('m') },
+    { MP_ROM_QSTR(MP_QSTR_FRAME_TYPE_TRACE_REQ), MP_ROM_INT('T') },
+    { MP_ROM_QSTR(MP_QSTR_FRAME_TYPE_TRACE_RESP), MP_ROM_INT('t') },
 
     { MP_ROM_QSTR(MP_QSTR_DEVICE_MAIN), MP_ROM_INT(0) },
     { MP_ROM_QSTR(MP_QSTR_DEVICE_SECONDARY_1), MP_ROM_INT(1) },
