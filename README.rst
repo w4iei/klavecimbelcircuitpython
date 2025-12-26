@@ -40,12 +40,21 @@ Official binaries for all supported boards are available through
 continuous builds. Full release notes are available through
 `GitHub releases <https://github.com/adafruit/circuitpython/releases>`_ as well.
 
-Fork Notes (RP2350A PSRAM)
----------------------------
+Fork Notes (RP2350A PSRAM + RS485)
+---------------------------------
 
 This repository is a fork to support an RP2350A board with external PSRAM
 (``photon_rp2350a_main_board``). PSRAM circuit select is wired to GPIO0, so it requires a board-specific build that
 enables PSRAM support.
+
+This fork also includes a photon-specific RS485 module (``photon_rs485``) for fast framed I/O with auto-reply
+support in C. It is enabled per-board by setting ``CIRCUITPY_PHOTON_RS485 = 1`` in the board's
+``mpconfigboard.mk`` (for example, ``ports/raspberrypi/boards/photon_rp2350a_main_board/mpconfigboard.mk`` and
+``ports/raspberrypi/boards/photon_rp2350a_sensor_board/mpconfigboard.mk``). This keeps the feature opt-in and
+avoids adding it to unrelated boards.
+
+Rationale: the Python RS485 parsing and reply path was too slow at high baud rates; moving framing, CRC, and
+auto-reply into C (with DMA-backed TX) reduces latency and CPU load while keeping the same on-wire protocol.
 
 Build steps (verified on macOS, using ``gmake`` and the official guide:
 https://learn.adafruit.com/building-circuitpython/macos):

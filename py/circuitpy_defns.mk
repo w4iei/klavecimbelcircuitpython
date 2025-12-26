@@ -327,6 +327,9 @@ endif
 ifeq ($(CIRCUITPY_PICODVI),1)
 SRC_PATTERNS += picodvi/%
 endif
+ifeq ($(CIRCUITPY_PHOTON_RS485),1)
+SRC_PATTERNS += photon_rs485/%
+endif
 ifeq ($(CIRCUITPY_PS2IO),1)
 SRC_PATTERNS += ps2io/%
 endif
@@ -542,6 +545,8 @@ SRC_COMMON_HAL_ALL = \
 	nvm/__init__.c \
 	os/__init__.c \
 	paralleldisplaybus/ParallelBus.c \
+	photon_rs485/RS485.c \
+	photon_rs485/__init__.c \
 	ps2io/Ps2.c \
 	ps2io/__init__.c \
 	pulseio/PulseIn.c \

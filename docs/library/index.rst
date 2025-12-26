@@ -55,3 +55,4 @@ the following libraries.
    :maxdepth: 1
 
    ../../shared-bindings/micropython/index.rst
+   photon_rs485.rst
