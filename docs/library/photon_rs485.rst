@@ -14,8 +14,8 @@ Overview
 ``photon_rs485`` wraps a UART and a DE (driver enable) pin to implement a simple
 framed protocol with a fixed preamble and CRC32. Use
 :py:meth:`photon_rs485.RS485.read_frames` and
-:py:meth:`photon_rs485.RS485.send_frame` to manage framing in Python, or set a
-one or more auto-reply handlers for request/response polling.
+:py:meth:`photon_rs485.RS485.send_frame` to manage framing in Python, or
+configure auto-reply handlers for request/response polling.
 
 The TX path uses DMA on RP2350 to reduce CPU overhead.
 
@@ -45,10 +45,9 @@ API summary
 
    Send a framed payload with CRC32.
 
-.. method:: photon_rs485.RS485.set_auto_reply(request_type, response_type, payload)
+.. method:: photon_rs485.RS485.clear_auto_replies()
 
-   Configure auto-replies for ``read_frames``. Pass ``None`` to disable and
-   clear any existing entries. Use a ``bytearray`` to update contents in place.
+   Disable auto-replies and remove any registered entries.
 
 .. method:: photon_rs485.RS485.add_auto_reply(request_type, response_type, payload)
 

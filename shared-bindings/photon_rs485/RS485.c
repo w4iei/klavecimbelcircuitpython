@@ -16,7 +16,7 @@
 //| class RS485:
 //|     """Fast RS485 framing with CRC32 for photon boards.
 //|
-//|     Use :meth:`set_auto_reply` and :meth:`add_auto_reply` to configure
+//|     Use :meth:`add_auto_reply` and :meth:`clear_auto_replies` to configure
 //|     request/response pairs handled in C when :meth:`read_frames` is called.
 //|     """
 //|
@@ -131,6 +131,18 @@ static void photon_rs485_add_auto_reply(photon_rs485_rs485_obj_t *self,
     self->auto_reply_enabled = true;
 }
 
+//|     def clear_auto_replies(self) -> None:
+//|         """Disable auto-replies and remove any registered entries."""
+//|         ...
+//|
+static mp_obj_t photon_rs485_obj_clear_auto_replies(mp_obj_t self_in) {
+    photon_rs485_rs485_obj_t *self = MP_OBJ_TO_PTR(self_in);
+    check_for_deinit(self);
+    photon_rs485_clear_auto_replies(self);
+    return mp_const_none;
+}
+MP_DEFINE_CONST_FUN_OBJ_1(photon_rs485_clear_auto_replies_obj, photon_rs485_obj_clear_auto_replies);
+
 //|     def send_frame(self, frame_type: int, target_id: int, payload: ReadableBuffer, seq: int) -> None:
 //|         """Send a framed payload with CRC32.
 //|
@@ -178,43 +190,6 @@ static mp_obj_t photon_rs485_obj_read_frames(mp_obj_t self_in) {
 }
 MP_DEFINE_CONST_FUN_OBJ_1(photon_rs485_read_frames_obj, photon_rs485_obj_read_frames);
 
-//|     def set_auto_reply(self, request_type: int, response_type: int, payload: ReadableBuffer | None) -> None:
-//|         """Configure auto-replies for ``read_frames``.
-//|
-//|         Passing ``None`` disables auto-replies and clears any existing entries.
-//|         Use :meth:`add_auto_reply` to register additional responses. The
-//|         payload can be a ``bytearray`` to update contents in-place.
-//|         """
-//|         ...
-//|
-static mp_obj_t photon_rs485_obj_set_auto_reply(size_t n_args, const mp_obj_t *pos_args, mp_map_t *kw_args) {
-    enum { ARG_request_type, ARG_response_type, ARG_payload };
-    static const mp_arg_t allowed_args[] = {
-        { MP_QSTR_request_type, MP_ARG_REQUIRED | MP_ARG_INT },
-        { MP_QSTR_response_type, MP_ARG_REQUIRED | MP_ARG_INT },
-        { MP_QSTR_payload, MP_ARG_REQUIRED | MP_ARG_OBJ },
-    };
-
-    photon_rs485_rs485_obj_t *self = MP_OBJ_TO_PTR(pos_args[0]);
-    check_for_deinit(self);
-
-    mp_arg_val_t args[MP_ARRAY_SIZE(allowed_args)];
-    mp_arg_parse_all(n_args - 1, pos_args + 1, kw_args, MP_ARRAY_SIZE(allowed_args), allowed_args, args);
-
-    if (args[ARG_payload].u_obj == mp_const_none) {
-        photon_rs485_clear_auto_replies(self);
-        return mp_const_none;
-    }
-
-    uint8_t request_type = (uint8_t)mp_arg_validate_int_range(args[ARG_request_type].u_int, 0, 0xFF, MP_QSTR_request_type);
-    uint8_t response_type = (uint8_t)mp_arg_validate_int_range(args[ARG_response_type].u_int, 0, 0xFF, MP_QSTR_response_type);
-
-    photon_rs485_clear_auto_replies(self);
-    photon_rs485_add_auto_reply(self, request_type, response_type, args[ARG_payload].u_obj);
-    return mp_const_none;
-}
-MP_DEFINE_CONST_FUN_OBJ_KW(photon_rs485_set_auto_reply_obj, 1, photon_rs485_obj_set_auto_reply);
-
 //|     def add_auto_reply(self, request_type: int, response_type: int, payload: ReadableBuffer) -> None:
 //|         """Register an additional auto-reply handler for ``read_frames``."""
 //|         ...
@@ -247,7 +222,7 @@ static const mp_rom_map_elem_t photon_rs485_locals_dict_table[] = {
     { MP_ROM_QSTR(MP_QSTR___exit__), MP_ROM_PTR(&default___exit___obj) },
     { MP_ROM_QSTR(MP_QSTR_send_frame), MP_ROM_PTR(&photon_rs485_send_frame_obj) },
     { MP_ROM_QSTR(MP_QSTR_read_frames), MP_ROM_PTR(&photon_rs485_read_frames_obj) },
-    { MP_ROM_QSTR(MP_QSTR_set_auto_reply), MP_ROM_PTR(&photon_rs485_set_auto_reply_obj) },
+    { MP_ROM_QSTR(MP_QSTR_clear_auto_replies), MP_ROM_PTR(&photon_rs485_clear_auto_replies_obj) },
     { MP_ROM_QSTR(MP_QSTR_add_auto_reply), MP_ROM_PTR(&photon_rs485_add_auto_reply_obj) },
 };
 static MP_DEFINE_CONST_DICT(photon_rs485_locals_dict, photon_rs485_locals_dict_table);
