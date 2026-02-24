@@ -331,7 +331,7 @@ ifeq ($(CIRCUITPY_PHOTON_RS485),1)
 SRC_PATTERNS += photon_rs485/%
 endif
 ifeq ($(CIRCUITPY_PHOTON_SENSORSCAN),1)
-SRC_PATTERNS += photon_sensorscan/%
+SRC_PATTERNS += photonsensorscan/%
 endif
 ifeq ($(CIRCUITPY_PS2IO),1)
 SRC_PATTERNS += ps2io/%
@@ -550,8 +550,6 @@ SRC_COMMON_HAL_ALL = \
 	paralleldisplaybus/ParallelBus.c \
 	photon_rs485/RS485.c \
 	photon_rs485/__init__.c \
-	photon_sensorscan/Scanner.c \
-	photon_sensorscan/__init__.c \
 	ps2io/Ps2.c \
 	ps2io/__init__.c \
 	pulseio/PulseIn.c \
@@ -775,6 +773,7 @@ SRC_SHARED_MODULE_ALL = \
 	onewireio/OneWire.c \
 	os/__init__.c \
 	paralleldisplaybus/ParallelBus.c \
+	photonsensorscan/__init__.c \
 	qrio/__init__.c \
 	qrio/QRDecoder.c \
 	rainbowio/__init__.c \

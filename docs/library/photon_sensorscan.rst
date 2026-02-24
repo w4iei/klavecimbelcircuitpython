@@ -1,21 +1,20 @@
 photon_sensorscan
 =================
 
-Photon-specific real-time sensor scanning helpers.
+Photon-specific SPI sensor scanning helpers for TLA2518 banks.
 
 This module is included only on boards that set ``CIRCUITPY_PHOTON_SENSORSCAN = 1``
-in their ``mpconfigboard.mk`` (for example,
-``ports/raspberrypi/boards/photon_rp2350a_main_board/mpconfigboard.mk`` and
-``ports/raspberrypi/boards/photon_rp2350a_sensor_board/mpconfigboard.mk``).
+in their ``mpconfigboard.mk``.
 
 Overview
 --------
 
-``photon_sensorscan`` owns the GPIO bank enable pins, mux select pins, and a
-single ADC input to scan a sensor array with deterministic timing. Scans are
-bank-major and channel-minor, starting at channel 0 for each bank. The driver
-writes exactly ``total_sensors`` samples per scan and increments ``update_id``
-each time. With two select pins, up to four channels per bank are addressable.
+``photon_sensorscan`` (also importable as ``photonsensorscan``) manages two SPI
+buses and eight chip-select lines. Each bank maps to one TLA2518, and each
+configured slot maps to an ADC channel plus optional emitter GPIO bit.
+
+Call :func:`init` once to configure pin mappings and per-slot behavior, then use
+:func:`scan_bank_into` or :func:`read_sensor`.
 
 Basic usage
 -----------
@@ -23,40 +22,40 @@ Basic usage
 .. code-block:: python
 
     import array
-    import photon_sensorscan
     import board
+    import photon_sensorscan
 
-    scanner = photon_sensorscan.Scanner(
-        enable_pins=(board.D2, board.D3),
-        sel0_pin=board.D4,
-        sel1_pin=board.D5,
-        adc_pin=board.A0,
-        settle_us=5,
-        sensors_per_bank=4,
-        total_sensors=6,
+    photon_sensorscan.init(
+        spi0=(board.GP2, board.GP3, board.GP4),
+        spi1=(board.GP6, board.GP7, board.GP8),
+        cs=(board.GP9, board.GP10, board.GP11, board.GP12,
+            board.GP13, board.GP14, board.GP15, board.GP16),
+        adc_channels=(0, 1, 2, 3),
+        emitter_bits=(-1, -1, 0, 1),
+        settle_us=50,
+        baudrate=15_000_000,
+        polarity=0,
+        phase=0,
     )
 
-    buf = array.array("H", [0] * 6)
-    scanner.scan_into(buf)
+    buf = array.array("H", [0] * 4)
+    photon_sensorscan.scan_bank_into(0, buf)
+    one_value = photon_sensorscan.read_sensor(0, 2)
 
 API summary
 -----------
 
-.. class:: photon_sensorscan.Scanner(enable_pins, sel0_pin, sel1_pin, adc_pin, *, settle_us, samples_per_channel=1, sensors_per_bank, total_sensors)
+.. function:: photon_sensorscan.init(*, spi0, spi1, cs, adc_channels, emitter_bits, settle_us=50, baudrate=15000000, polarity=0, phase=0)
 
-   Create a scanner bound to GPIO bank enables, mux selects, and one ADC input.
-   ``adc_pin`` can be an ADC-capable pin or an ADC channel index. When
-   ``samples_per_channel`` is greater than 1, samples are averaged per channel.
+   Initialize module-owned SPI interfaces, chip-select outputs, and slot mapping.
+   ``spi0`` and ``spi1`` are ``(sck, mosi, miso)`` tuples. ``cs`` must contain
+   exactly 8 chip-select pins. ``adc_channels`` and ``emitter_bits`` must have
+   the same length (up to 8 slots).
 
-.. method:: photon_sensorscan.Scanner.scan_into(buffer)
+.. function:: photon_sensorscan.scan_bank_into(bank, out)
 
-   Scan the full sensor array into ``buffer``. ``buffer`` must hold
-   ``total_sensors`` 16-bit values (for example ``array('H')`` or ``bytearray``).
+   Scan all configured slots for ``bank`` into writable ``out``.
 
-.. method:: photon_sensorscan.Scanner.read_channel(bank, channel)
+.. function:: photon_sensorscan.read_sensor(bank, slot)
 
-   Read a single bank/channel (debug helper).
-
-.. attribute:: photon_sensorscan.Scanner.update_id
-
-   Monotonic counter incremented after each full scan. (read-only)
+   Read a single configured slot from ``bank`` and return the 12-bit ADC value.
