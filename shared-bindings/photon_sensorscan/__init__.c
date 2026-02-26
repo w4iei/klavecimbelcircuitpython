@@ -23,12 +23,23 @@ static void parse_spi_tuple(mp_obj_t tuple_obj, qstr arg_name,
     *miso = validate_obj_is_pin(items[2], arg_name);
 }
 
+static void parse_optional_spi_tuple(mp_obj_t tuple_obj, qstr arg_name,
+    const mcu_pin_obj_t **sck, const mcu_pin_obj_t **mosi, const mcu_pin_obj_t **miso) {
+    if (tuple_obj == mp_const_none) {
+        *sck = NULL;
+        *mosi = NULL;
+        *miso = NULL;
+        return;
+    }
+    parse_spi_tuple(tuple_obj, arg_name, sck, mosi, miso);
+}
+
 //| """Photon TLA2518 real-time scanner helpers."""
 //|
 //| def init(
 //|     *,
-//|     spi0: tuple[microcontroller.Pin, microcontroller.Pin, microcontroller.Pin],
-//|     spi1: tuple[microcontroller.Pin, microcontroller.Pin, microcontroller.Pin],
+//|     spi0: Optional[tuple[microcontroller.Pin, microcontroller.Pin, microcontroller.Pin]] = None,
+//|     spi1: Optional[tuple[microcontroller.Pin, microcontroller.Pin, microcontroller.Pin]] = None,
 //|     bank_count: int,
 //|     cs: tuple[microcontroller.Pin, ...],
 //|     bank_spi_bus: tuple[int, ...],
@@ -59,8 +70,8 @@ static mp_obj_t photonsensorscan_init(size_t n_args, const mp_obj_t *pos_args, m
         ARG_phase,
     };
     static const mp_arg_t allowed_args[] = {
-        { MP_QSTR_spi0, MP_ARG_REQUIRED | MP_ARG_KW_ONLY | MP_ARG_OBJ },
-        { MP_QSTR_spi1, MP_ARG_REQUIRED | MP_ARG_KW_ONLY | MP_ARG_OBJ },
+        { MP_QSTR_spi0, MP_ARG_KW_ONLY | MP_ARG_OBJ, {.u_obj = mp_const_none} },
+        { MP_QSTR_spi1, MP_ARG_KW_ONLY | MP_ARG_OBJ, {.u_obj = mp_const_none} },
         { MP_QSTR_bank_count, MP_ARG_REQUIRED | MP_ARG_KW_ONLY | MP_ARG_INT },
         { MP_QSTR_cs, MP_ARG_REQUIRED | MP_ARG_KW_ONLY | MP_ARG_OBJ },
         { MP_QSTR_bank_spi_bus, MP_ARG_REQUIRED | MP_ARG_KW_ONLY | MP_ARG_OBJ },
@@ -81,8 +92,8 @@ static mp_obj_t photonsensorscan_init(size_t n_args, const mp_obj_t *pos_args, m
     const mcu_pin_obj_t *spi1_sck;
     const mcu_pin_obj_t *spi1_mosi;
     const mcu_pin_obj_t *spi1_miso;
-    parse_spi_tuple(args[ARG_spi0].u_obj, MP_QSTR_spi0, &spi0_sck, &spi0_mosi, &spi0_miso);
-    parse_spi_tuple(args[ARG_spi1].u_obj, MP_QSTR_spi1, &spi1_sck, &spi1_mosi, &spi1_miso);
+    parse_optional_spi_tuple(args[ARG_spi0].u_obj, MP_QSTR_spi0, &spi0_sck, &spi0_mosi, &spi0_miso);
+    parse_optional_spi_tuple(args[ARG_spi1].u_obj, MP_QSTR_spi1, &spi1_sck, &spi1_mosi, &spi1_miso);
     uint8_t bank_count = (uint8_t)mp_arg_validate_int_range(
         args[ARG_bank_count].u_int, 1, PHOTON_SENSORSCAN_MAX_BANKS, MP_QSTR_bank_count);
 
@@ -187,6 +198,18 @@ static mp_obj_t photonsensorscan_refresh_all(void) {
 }
 MP_DEFINE_CONST_FUN_OBJ_0(photonsensorscan_refresh_all_obj, photonsensorscan_refresh_all);
 
+//| def refresh_all_return() -> tuple:
+//|     """Temporary debug helper: read all banks/slots and return values as a flat tuple.
+//|
+//|     Values are ordered bank-major and this call does not write the init-time readings buffer.
+//|     """
+//|     ...
+//|
+static mp_obj_t photonsensorscan_refresh_all_return(void) {
+    return common_hal_photonsensorscan_refresh_all_return();
+}
+MP_DEFINE_CONST_FUN_OBJ_0(photonsensorscan_refresh_all_return_obj, photonsensorscan_refresh_all_return);
+
 //| def brownout(bank: int) -> bool:
 //|     """Return the latched brownout status captured during init/reset for ``bank``."""
 //|     ...
@@ -235,6 +258,105 @@ static mp_obj_t photonsensorscan_refresh_status(void) {
 }
 MP_DEFINE_CONST_FUN_OBJ_0(photonsensorscan_refresh_status_obj, photonsensorscan_refresh_status);
 
+//| def debug_state() -> dict:
+//|     """Return a snapshot of low-level driver debug counters/state."""
+//|     ...
+//|
+static mp_obj_t photonsensorscan_debug_state(void) {
+    photonsensorscan_debug_state_t state;
+    common_hal_photonsensorscan_get_debug_state(&state);
+
+    mp_obj_t drdy_items[PHOTON_SENSORSCAN_MAX_BANKS];
+    for (size_t i = 0; i < PHOTON_SENSORSCAN_MAX_BANKS; i++) {
+        drdy_items[i] = mp_obj_new_int_from_uint(state.drdy_count[i]);
+    }
+    mp_obj_t all_zero_items[2] = {
+        mp_obj_new_int_from_uint(state.all_zero_rx_count[0]),
+        mp_obj_new_int_from_uint(state.all_zero_rx_count[1]),
+    };
+    mp_obj_t spi_funcsel_assert_items[2] = {
+        mp_obj_new_int_from_uint(state.spi_funcsel_assert_fail[0]),
+        mp_obj_new_int_from_uint(state.spi_funcsel_assert_fail[1]),
+    };
+
+    mp_obj_t out = mp_obj_new_dict(37);
+    mp_obj_dict_store(out, MP_OBJ_NEW_QSTR(MP_QSTR_spi0_xfers), mp_obj_new_int_from_uint(state.spi0_xfers));
+    mp_obj_dict_store(out, MP_OBJ_NEW_QSTR(MP_QSTR_spi1_xfers), mp_obj_new_int_from_uint(state.spi1_xfers));
+    mp_obj_dict_store(out, MP_OBJ_NEW_QSTR(MP_QSTR_spi0_fail), mp_obj_new_int_from_uint(state.spi0_fail));
+    mp_obj_dict_store(out, MP_OBJ_NEW_QSTR(MP_QSTR_spi1_fail), mp_obj_new_int_from_uint(state.spi1_fail));
+    mp_obj_dict_store(out, MP_OBJ_NEW_QSTR(MP_QSTR_drdy_count), mp_obj_new_tuple(PHOTON_SENSORSCAN_MAX_BANKS, drdy_items));
+    mp_obj_dict_store(out, MP_OBJ_NEW_QSTR(MP_QSTR_samples_written), mp_obj_new_int_from_uint(state.samples_written));
+    mp_obj_dict_store(out, MP_OBJ_NEW_QSTR(MP_QSTR_last_rx_len), mp_obj_new_int_from_uint(state.last_rx_len));
+    mp_obj_dict_store(out, MP_OBJ_NEW_QSTR(MP_QSTR_last_rx), mp_obj_new_bytes(state.last_rx, sizeof(state.last_rx)));
+    mp_obj_dict_store(out, MP_OBJ_NEW_QSTR(MP_QSTR_cs_set_calls), mp_obj_new_int_from_uint(state.cs_set_calls));
+    mp_obj_dict_store(out, MP_OBJ_NEW_QSTR(MP_QSTR_cs_set_mismatch), mp_obj_new_int_from_uint(state.cs_set_mismatch));
+    mp_obj_dict_store(out, MP_OBJ_NEW_QSTR(MP_QSTR_last_cs_bank), mp_obj_new_int_from_uint(state.last_cs_bank));
+    mp_obj_dict_store(out, MP_OBJ_NEW_QSTR(MP_QSTR_last_cs_target), mp_obj_new_int_from_uint(state.last_cs_target));
+    mp_obj_dict_store(out, MP_OBJ_NEW_QSTR(MP_QSTR_last_cs_out), mp_obj_new_int_from_uint(state.last_cs_out));
+    mp_obj_dict_store(out, MP_OBJ_NEW_QSTR(MP_QSTR_last_cs_readback), mp_obj_new_int_from_uint(state.last_cs_readback));
+    mp_obj_dict_store(out, MP_OBJ_NEW_QSTR(MP_QSTR_last_cs_direction), mp_obj_new_int_from_uint(state.last_cs_direction));
+    mp_obj_dict_store(out, MP_OBJ_NEW_QSTR(MP_QSTR_cs_funcsel), mp_obj_new_int_from_uint(state.cs_funcsel));
+    mp_obj_dict_store(out, MP_OBJ_NEW_QSTR(MP_QSTR_cs_pad_pue), mp_obj_new_int_from_uint(state.cs_pad_pue));
+    mp_obj_dict_store(out, MP_OBJ_NEW_QSTR(MP_QSTR_cs_pad_pde), mp_obj_new_int_from_uint(state.cs_pad_pde));
+    mp_obj_dict_store(out, MP_OBJ_NEW_QSTR(MP_QSTR_sck_funcsel), mp_obj_new_bytes(state.sck_funcsel, sizeof(state.sck_funcsel)));
+    mp_obj_dict_store(out, MP_OBJ_NEW_QSTR(MP_QSTR_mosi_funcsel), mp_obj_new_bytes(state.mosi_funcsel, sizeof(state.mosi_funcsel)));
+    mp_obj_dict_store(out, MP_OBJ_NEW_QSTR(MP_QSTR_miso_funcsel), mp_obj_new_bytes(state.miso_funcsel, sizeof(state.miso_funcsel)));
+    mp_obj_dict_store(out, MP_OBJ_NEW_QSTR(MP_QSTR_cs_funcsel_assert_fail), mp_obj_new_int_from_uint(state.cs_funcsel_assert_fail));
+    mp_obj_dict_store(out, MP_OBJ_NEW_QSTR(MP_QSTR_spi_funcsel_assert_fail), mp_obj_new_tuple(2, spi_funcsel_assert_items));
+    mp_obj_dict_store(out, MP_OBJ_NEW_QSTR(MP_QSTR_all_zero_rx_count), mp_obj_new_tuple(2, all_zero_items));
+    mp_obj_dict_store(out, MP_OBJ_NEW_QSTR(MP_QSTR_miso_probe_pull_up), mp_obj_new_bytes(state.miso_probe_pull_up, sizeof(state.miso_probe_pull_up)));
+    mp_obj_dict_store(out, MP_OBJ_NEW_QSTR(MP_QSTR_miso_probe_pull_down), mp_obj_new_bytes(state.miso_probe_pull_down, sizeof(state.miso_probe_pull_down)));
+    mp_obj_dict_store(out, MP_OBJ_NEW_QSTR(MP_QSTR_miso_probe_valid_mask), mp_obj_new_int_from_uint(state.miso_probe_valid_mask));
+    mp_obj_dict_store(out, MP_OBJ_NEW_QSTR(MP_QSTR_miso_probe_triggered_mask), mp_obj_new_int_from_uint(state.miso_probe_triggered_mask));
+    mp_obj_dict_store(out, MP_OBJ_NEW_QSTR(MP_QSTR_sanity_status_reg), mp_obj_new_bytes(state.sanity_status_reg, sizeof(state.sanity_status_reg)));
+    mp_obj_dict_store(out, MP_OBJ_NEW_QSTR(MP_QSTR_sanity_pin_cfg_reg), mp_obj_new_bytes(state.sanity_pin_cfg_reg, sizeof(state.sanity_pin_cfg_reg)));
+    mp_obj_dict_store(out, MP_OBJ_NEW_QSTR(MP_QSTR_sanity_general_cfg_reg), mp_obj_new_bytes(state.sanity_general_cfg_reg, sizeof(state.sanity_general_cfg_reg)));
+    mp_obj_dict_store(out, MP_OBJ_NEW_QSTR(MP_QSTR_sanity_status_valid_mask), mp_obj_new_int_from_uint(state.sanity_status_valid_mask));
+    mp_obj_dict_store(out, MP_OBJ_NEW_QSTR(MP_QSTR_sanity_pin_cfg_valid_mask), mp_obj_new_int_from_uint(state.sanity_pin_cfg_valid_mask));
+    mp_obj_dict_store(out, MP_OBJ_NEW_QSTR(MP_QSTR_sanity_general_cfg_valid_mask), mp_obj_new_int_from_uint(state.sanity_general_cfg_valid_mask));
+    mp_obj_dict_store(out, MP_OBJ_NEW_QSTR(MP_QSTR_last_bank), mp_obj_new_int_from_uint(state.last_bank));
+    mp_obj_dict_store(out, MP_OBJ_NEW_QSTR(MP_QSTR_last_bus), mp_obj_new_int_from_uint(state.last_bus));
+    mp_obj_dict_store(out, MP_OBJ_NEW_QSTR(MP_QSTR_last_error), mp_obj_new_int_from_uint(state.last_error));
+    return out;
+}
+MP_DEFINE_CONST_FUN_OBJ_0(photonsensorscan_debug_state_obj, photonsensorscan_debug_state);
+
+static mp_obj_t classify_miso_probe(uint8_t valid_mask, uint8_t bus, uint8_t up, uint8_t down) {
+    if ((valid_mask & (1u << bus)) == 0) {
+        return MP_OBJ_NEW_QSTR(MP_QSTR_not_probed);
+    }
+    if (up == 0 && down == 0) {
+        return MP_OBJ_NEW_QSTR(MP_QSTR_stuck_low);
+    }
+    if (up == 1 && down == 0) {
+        return MP_OBJ_NEW_QSTR(MP_QSTR_floating);
+    }
+    if (up == 1 && down == 1) {
+        return MP_OBJ_NEW_QSTR(MP_QSTR_stuck_high);
+    }
+    return MP_OBJ_NEW_QSTR(MP_QSTR_invalid);
+}
+
+//| def debug_miso_probe() -> dict:
+//|     """Return one-time MISO pull probe results captured after all-zero RX detection."""
+//|     ...
+//|
+static mp_obj_t photonsensorscan_debug_miso_probe(void) {
+    photonsensorscan_debug_state_t state;
+    common_hal_photonsensorscan_get_debug_state(&state);
+    mp_obj_t out = mp_obj_new_dict(7);
+    mp_obj_dict_store(out, MP_OBJ_NEW_QSTR(MP_QSTR_valid_mask), mp_obj_new_int_from_uint(state.miso_probe_valid_mask));
+    mp_obj_dict_store(out, MP_OBJ_NEW_QSTR(MP_QSTR_triggered_mask), mp_obj_new_int_from_uint(state.miso_probe_triggered_mask));
+    mp_obj_dict_store(out, MP_OBJ_NEW_QSTR(MP_QSTR_pull_up), mp_obj_new_bytes(state.miso_probe_pull_up, sizeof(state.miso_probe_pull_up)));
+    mp_obj_dict_store(out, MP_OBJ_NEW_QSTR(MP_QSTR_pull_down), mp_obj_new_bytes(state.miso_probe_pull_down, sizeof(state.miso_probe_pull_down)));
+    mp_obj_dict_store(out, MP_OBJ_NEW_QSTR(MP_QSTR_bus0_state), classify_miso_probe(
+        state.miso_probe_valid_mask, 0, state.miso_probe_pull_up[0], state.miso_probe_pull_down[0]));
+    mp_obj_dict_store(out, MP_OBJ_NEW_QSTR(MP_QSTR_bus1_state), classify_miso_probe(
+        state.miso_probe_valid_mask, 1, state.miso_probe_pull_up[1], state.miso_probe_pull_down[1]));
+    return out;
+}
+MP_DEFINE_CONST_FUN_OBJ_0(photonsensorscan_debug_miso_probe_obj, photonsensorscan_debug_miso_probe);
+
 static const mp_rom_map_elem_t photonsensorscan_module_globals_table[] = {
     { MP_ROM_QSTR(MP_QSTR___name__), MP_ROM_QSTR(MP_QSTR_photon_sensorscan) },
     { MP_ROM_QSTR(MP_QSTR_init), MP_ROM_PTR(&photonsensorscan_init_obj) },
@@ -242,11 +364,14 @@ static const mp_rom_map_elem_t photonsensorscan_module_globals_table[] = {
     { MP_ROM_QSTR(MP_QSTR_refresh_sensor), MP_ROM_PTR(&photonsensorscan_refresh_sensor_obj) },
     { MP_ROM_QSTR(MP_QSTR_refresh_bank), MP_ROM_PTR(&photonsensorscan_refresh_bank_obj) },
     { MP_ROM_QSTR(MP_QSTR_refresh_all), MP_ROM_PTR(&photonsensorscan_refresh_all_obj) },
+    { MP_ROM_QSTR(MP_QSTR_refresh_all_return), MP_ROM_PTR(&photonsensorscan_refresh_all_return_obj) },
     { MP_ROM_QSTR(MP_QSTR_brownout), MP_ROM_PTR(&photonsensorscan_brownout_obj) },
     { MP_ROM_QSTR(MP_QSTR_crcerr_fuse), MP_ROM_PTR(&photonsensorscan_crcerr_fuse_obj) },
     { MP_ROM_QSTR(MP_QSTR_reset_device), MP_ROM_PTR(&photonsensorscan_reset_device_obj) },
     { MP_ROM_QSTR(MP_QSTR_reset_all_banks), MP_ROM_PTR(&photonsensorscan_reset_all_banks_obj) },
     { MP_ROM_QSTR(MP_QSTR_refresh_status), MP_ROM_PTR(&photonsensorscan_refresh_status_obj) },
+    { MP_ROM_QSTR(MP_QSTR_debug_state), MP_ROM_PTR(&photonsensorscan_debug_state_obj) },
+    { MP_ROM_QSTR(MP_QSTR_debug_miso_probe), MP_ROM_PTR(&photonsensorscan_debug_miso_probe_obj) },
 };
 static MP_DEFINE_CONST_DICT(photonsensorscan_module_globals, photonsensorscan_module_globals_table);
 
