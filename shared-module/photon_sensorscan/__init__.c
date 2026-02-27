@@ -632,8 +632,9 @@ static void validate_readings_buffer(
     }
 
     size_t value_count = (size_t)bank_count_in * slot_count_in;
-    size_t min_len = is_bytes ? value_count * 2 : value_count;
-    if (bufinfo.len < min_len) {
+    // Buffer lengths are expressed in bytes for both bytearray and array('H').
+    size_t min_len_bytes = value_count * sizeof(uint16_t);
+    if (bufinfo.len < min_len_bytes) {
         mp_raise_ValueError(MP_ERROR_TEXT("readings_buffer too small"));
     }
 
@@ -657,8 +658,8 @@ static void acquire_readings_buffer_view(readings_buffer_view_t *view) {
         mp_raise_RuntimeError(MP_ERROR_TEXT("readings_buffer type changed"));
     }
 
-    size_t min_len = readings_buffer_is_bytes ? readings_buffer_entry_count * 2 : readings_buffer_entry_count;
-    if (bufinfo.len < min_len) {
+    size_t min_len_bytes = readings_buffer_entry_count * sizeof(uint16_t);
+    if (bufinfo.len < min_len_bytes) {
         mp_raise_RuntimeError(MP_ERROR_TEXT("readings_buffer resized too small"));
     }
 
