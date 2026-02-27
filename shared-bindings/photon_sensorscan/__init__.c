@@ -279,7 +279,7 @@ static mp_obj_t photonsensorscan_debug_state(void) {
         mp_obj_new_int_from_uint(state.spi_funcsel_assert_fail[1]),
     };
 
-    mp_obj_t out = mp_obj_new_dict(37);
+    mp_obj_t out = mp_obj_new_dict(39);
     mp_obj_dict_store(out, MP_OBJ_NEW_QSTR(MP_QSTR_spi0_xfers), mp_obj_new_int_from_uint(state.spi0_xfers));
     mp_obj_dict_store(out, MP_OBJ_NEW_QSTR(MP_QSTR_spi1_xfers), mp_obj_new_int_from_uint(state.spi1_xfers));
     mp_obj_dict_store(out, MP_OBJ_NEW_QSTR(MP_QSTR_spi0_fail), mp_obj_new_int_from_uint(state.spi0_fail));
@@ -296,6 +296,8 @@ static mp_obj_t photonsensorscan_debug_state(void) {
     mp_obj_dict_store(out, MP_OBJ_NEW_QSTR(MP_QSTR_last_cs_readback), mp_obj_new_int_from_uint(state.last_cs_readback));
     mp_obj_dict_store(out, MP_OBJ_NEW_QSTR(MP_QSTR_last_cs_direction), mp_obj_new_int_from_uint(state.last_cs_direction));
     mp_obj_dict_store(out, MP_OBJ_NEW_QSTR(MP_QSTR_cs_funcsel), mp_obj_new_int_from_uint(state.cs_funcsel));
+    mp_obj_dict_store(out, MP_OBJ_NEW_QSTR(MP_QSTR_expected_spi_funcsel), mp_obj_new_int_from_uint(state.expected_spi_funcsel));
+    mp_obj_dict_store(out, MP_OBJ_NEW_QSTR(MP_QSTR_expected_sio_funcsel), mp_obj_new_int_from_uint(state.expected_sio_funcsel));
     mp_obj_dict_store(out, MP_OBJ_NEW_QSTR(MP_QSTR_cs_pad_pue), mp_obj_new_int_from_uint(state.cs_pad_pue));
     mp_obj_dict_store(out, MP_OBJ_NEW_QSTR(MP_QSTR_cs_pad_pde), mp_obj_new_int_from_uint(state.cs_pad_pde));
     mp_obj_dict_store(out, MP_OBJ_NEW_QSTR(MP_QSTR_sck_funcsel), mp_obj_new_bytes(state.sck_funcsel, sizeof(state.sck_funcsel)));

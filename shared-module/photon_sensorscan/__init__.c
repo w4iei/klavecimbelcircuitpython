@@ -239,11 +239,17 @@ static void debug_reset_state(void) {
     debug_state.last_cs_direction = 0xFF;
     debug_state.last_cs_out = 0xFF;
     debug_state.cs_funcsel = 0xFF;
+    debug_state.expected_spi_funcsel = 0xFF;
+    debug_state.expected_sio_funcsel = 0xFF;
     debug_state.cs_pad_pue = 0xFF;
     debug_state.cs_pad_pde = 0xFF;
     memset(debug_state.sck_funcsel, 0xFF, sizeof(debug_state.sck_funcsel));
     memset(debug_state.mosi_funcsel, 0xFF, sizeof(debug_state.mosi_funcsel));
     memset(debug_state.miso_funcsel, 0xFF, sizeof(debug_state.miso_funcsel));
+#if defined(PICO_RP2350)
+    debug_state.expected_spi_funcsel = (uint8_t)GPIO_FUNC_SPI;
+    debug_state.expected_sio_funcsel = (uint8_t)GPIO_FUNC_SIO;
+#endif
 }
 
 static inline void delay_microseconds(uint32_t us);
@@ -270,10 +276,12 @@ static inline void debug_capture_cs_mux_state(digitalio_digitalinout_obj_t *cs) 
     #if defined(PICO_RP2350)
     uint8_t gpio = cs->pin->number;
     uint8_t funcsel = (uint8_t)gpio_get_function(gpio);
+    uint8_t expected_sio_funcsel = (uint8_t)GPIO_FUNC_SIO;
     debug_state.cs_funcsel = funcsel;
+    debug_state.expected_sio_funcsel = expected_sio_funcsel;
     debug_state.cs_pad_pue = gpio_is_pulled_up(gpio) ? 1 : 0;
     debug_state.cs_pad_pde = gpio_is_pulled_down(gpio) ? 1 : 0;
-    if (funcsel != GPIO_FUNC_SIO) {
+    if (funcsel != expected_sio_funcsel) {
         debug_state.cs_funcsel_assert_fail++;
     }
     #else
@@ -289,21 +297,23 @@ static inline void debug_capture_spi_mux_state(uint8_t bus) {
     }
     #if defined(PICO_RP2350)
     bool mismatch = false;
+    uint8_t expected_spi_funcsel = (uint8_t)GPIO_FUNC_SPI;
     const mcu_pin_obj_t *sck = spi_pin_config[bus][0];
     const mcu_pin_obj_t *mosi = spi_pin_config[bus][1];
     const mcu_pin_obj_t *miso = spi_pin_config[bus][2];
+    debug_state.expected_spi_funcsel = expected_spi_funcsel;
 
     debug_state.sck_funcsel[bus] = sck == NULL ? 0xFF : (uint8_t)gpio_get_function(sck->number);
     debug_state.mosi_funcsel[bus] = mosi == NULL ? 0xFF : (uint8_t)gpio_get_function(mosi->number);
     debug_state.miso_funcsel[bus] = miso == NULL ? 0xFF : (uint8_t)gpio_get_function(miso->number);
 
-    if (sck != NULL && debug_state.sck_funcsel[bus] != GPIO_FUNC_SPI) {
+    if (sck != NULL && debug_state.sck_funcsel[bus] != expected_spi_funcsel) {
         mismatch = true;
     }
-    if (mosi != NULL && debug_state.mosi_funcsel[bus] != GPIO_FUNC_SPI) {
+    if (mosi != NULL && debug_state.mosi_funcsel[bus] != expected_spi_funcsel) {
         mismatch = true;
     }
-    if (miso != NULL && debug_state.miso_funcsel[bus] != GPIO_FUNC_SPI) {
+    if (miso != NULL && debug_state.miso_funcsel[bus] != expected_spi_funcsel) {
         mismatch = true;
     }
     if (mismatch) {

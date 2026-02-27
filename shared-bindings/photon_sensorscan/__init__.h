@@ -32,6 +32,8 @@ typedef struct {
     uint8_t last_cs_readback;
     uint8_t last_cs_direction;
     uint8_t cs_funcsel;
+    uint8_t expected_spi_funcsel;
+    uint8_t expected_sio_funcsel;
     uint8_t cs_pad_pue;
     uint8_t cs_pad_pde;
     uint8_t sck_funcsel[2];
