@@ -14,6 +14,7 @@
 #include "py/binary.h"
 #include "py/objarray.h"
 #include "py/runtime.h"
+#include "supervisor/shared/tick.h"
 #include <string.h>
 
 #if defined(PICO_RP2350)
@@ -459,6 +460,21 @@ typedef struct {
     uint16_t *u16;
 } readings_buffer_view_t;
 
+typedef struct {
+    uint8_t *ptr;
+    size_t len;
+} u8_buffer_view_t;
+
+typedef struct {
+    uint16_t *ptr;
+    size_t len;
+} u16_buffer_view_t;
+
+typedef struct {
+    uint32_t *ptr;
+    size_t len;
+} u32_buffer_view_t;
+
 // Write a 3-byte command frame: opcode + register + value.
 static inline bool write_register3(busio_spi_obj_t *spi, digitalio_digitalinout_obj_t *cs, uint8_t op, uint8_t reg, uint8_t val) {
     uint8_t write_frame_3b[3] = {op, reg, val};
@@ -649,6 +665,126 @@ static void acquire_readings_buffer_view(readings_buffer_view_t *view) {
     view->is_bytes = readings_buffer_is_bytes;
     view->bytes = readings_buffer_is_bytes ? (uint8_t *)bufinfo.buf : NULL;
     view->u16 = readings_buffer_is_bytes ? NULL : (uint16_t *)bufinfo.buf;
+}
+
+static inline uint16_t read_sensor_value_at_index(const readings_buffer_view_t *view, size_t index) {
+    if (view->is_bytes) {
+        size_t offset = index * 2;
+        return (uint16_t)view->bytes[offset] | ((uint16_t)view->bytes[offset + 1] << 8);
+    }
+    return view->u16[index];
+}
+
+static void acquire_u8_buffer_view(mp_obj_t buffer_obj, size_t min_len, u8_buffer_view_t *view) {
+    mp_buffer_info_t bufinfo;
+    mp_get_buffer_raise(buffer_obj, &bufinfo, MP_BUFFER_WRITE);
+    uint8_t typecode = (uint8_t)(bufinfo.typecode & ~MP_OBJ_ARRAY_TYPECODE_FLAG_RW);
+    bool is_bytes = typecode == BYTEARRAY_TYPECODE || typecode == 'B';
+    if (!is_bytes) {
+        mp_raise_ValueError(MP_ERROR_TEXT("expected 'B' buffer"));
+    }
+    view->ptr = (uint8_t *)bufinfo.buf;
+    view->len = bufinfo.len;
+    if (view->len < min_len) {
+        mp_raise_ValueError(MP_ERROR_TEXT("state buffer too small"));
+    }
+}
+
+static void acquire_u16_buffer_view(mp_obj_t buffer_obj, size_t min_len, u16_buffer_view_t *view) {
+    mp_buffer_info_t bufinfo;
+    mp_get_buffer_raise(buffer_obj, &bufinfo, MP_BUFFER_WRITE);
+    uint8_t typecode = (uint8_t)(bufinfo.typecode & ~MP_OBJ_ARRAY_TYPECODE_FLAG_RW);
+    if (typecode != 'H') {
+        mp_raise_ValueError(MP_ERROR_TEXT("expected 'H' buffer"));
+    }
+    if ((bufinfo.len & 1u) != 0) {
+        mp_raise_ValueError(MP_ERROR_TEXT("unaligned 'H' buffer"));
+    }
+    view->ptr = (uint16_t *)bufinfo.buf;
+    view->len = bufinfo.len / sizeof(uint16_t);
+    if (view->len < min_len) {
+        mp_raise_ValueError(MP_ERROR_TEXT("state buffer too small"));
+    }
+}
+
+static void acquire_u32_buffer_view(mp_obj_t buffer_obj, size_t min_len, u32_buffer_view_t *view) {
+    mp_buffer_info_t bufinfo;
+    mp_get_buffer_raise(buffer_obj, &bufinfo, MP_BUFFER_WRITE);
+    uint8_t typecode = (uint8_t)(bufinfo.typecode & ~MP_OBJ_ARRAY_TYPECODE_FLAG_RW);
+    if (typecode != 'I') {
+        mp_raise_ValueError(MP_ERROR_TEXT("expected 'I' buffer"));
+    }
+    if ((bufinfo.len & 3u) != 0) {
+        mp_raise_ValueError(MP_ERROR_TEXT("unaligned 'I' buffer"));
+    }
+    view->ptr = (uint32_t *)bufinfo.buf;
+    view->len = bufinfo.len / sizeof(uint32_t);
+    if (view->len < min_len) {
+        mp_raise_ValueError(MP_ERROR_TEXT("state buffer too small"));
+    }
+}
+
+static inline bool neighbor_is_active_for_guard(
+    int16_t neighbor_idx,
+    uint16_t active_sensors,
+    const u8_buffer_view_t *sensor_disabled,
+    const u16_buffer_view_t *sensor_min,
+    const u16_buffer_view_t *sensor_max,
+    const u16_buffer_view_t *latest_values,
+    const u8_buffer_view_t *sensor_polarity,
+    uint16_t min_event_range,
+    uint8_t adjacent_guard_pct) {
+    if (neighbor_idx < 0 || (uint16_t)neighbor_idx >= active_sensors) {
+        return false;
+    }
+    size_t idx = (size_t)neighbor_idx;
+    if (sensor_disabled->ptr[idx]) {
+        return false;
+    }
+
+    uint16_t neighbor_min = sensor_min->ptr[idx];
+    uint16_t neighbor_max = sensor_max->ptr[idx];
+    uint16_t neighbor_val = latest_values->ptr[idx];
+    uint16_t neighbor_low = neighbor_min < neighbor_val ? neighbor_min : neighbor_val;
+    uint16_t neighbor_high = neighbor_max > neighbor_val ? neighbor_max : neighbor_val;
+    uint16_t neighbor_rng = neighbor_high - neighbor_low;
+    if (neighbor_rng < min_event_range) {
+        return false;
+    }
+
+    if (sensor_polarity->ptr[idx] != 0) {
+        uint16_t threshold = (uint16_t)(neighbor_high - ((uint32_t)neighbor_rng * adjacent_guard_pct) / 100u);
+        return neighbor_val <= threshold;
+    }
+    uint16_t threshold = (uint16_t)(neighbor_low + ((uint32_t)neighbor_rng * adjacent_guard_pct) / 100u);
+    return neighbor_val >= threshold;
+}
+
+static inline bool should_update_max_for_sensor(
+    uint16_t idx,
+    uint16_t active_sensors,
+    const u8_buffer_view_t *sensor_disabled,
+    const u16_buffer_view_t *sensor_min,
+    const u16_buffer_view_t *sensor_max,
+    const u16_buffer_view_t *latest_values,
+    const u8_buffer_view_t *sensor_polarity,
+    uint16_t min_event_range,
+    uint8_t adjacent_guard_pct) {
+    uint16_t rng = sensor_max->ptr[idx] - sensor_min->ptr[idx];
+    if (rng < min_event_range) {
+        return true;
+    }
+    if (neighbor_is_active_for_guard(
+        (int16_t)idx - 1, active_sensors, sensor_disabled, sensor_min,
+        sensor_max, latest_values, sensor_polarity, min_event_range, adjacent_guard_pct)) {
+        return false;
+    }
+    if (neighbor_is_active_for_guard(
+        (int16_t)idx + 1, active_sensors, sensor_disabled, sensor_min,
+        sensor_max, latest_values, sensor_polarity, min_event_range, adjacent_guard_pct)) {
+        return false;
+    }
+    return true;
 }
 
 static inline void write_sensor_value(
@@ -1169,6 +1305,218 @@ void common_hal_photonsensorscan_refresh_status(void) {
         mp_raise_RuntimeError(PHOTON_SENSORSCAN_ERR_SPI_TRANSFER_STATUS);
     }
     debug_set_error(PHOTON_SENSORSCAN_DEBUG_ERR_NONE);
+}
+
+size_t common_hal_photonsensorscan_process_scan_events(
+    mp_int_t active_sensors_in,
+    mp_obj_t latest_values_obj,
+    mp_obj_t sensor_disabled_obj,
+    mp_obj_t sensor_min_obj,
+    mp_obj_t sensor_max_obj,
+    mp_obj_t sensor_polarity_obj,
+    mp_obj_t sensor_strike_pct_obj,
+    mp_obj_t sensor_on_obj,
+    mp_obj_t sensor_active_obj,
+    mp_obj_t sensor_strike_pending_obj,
+    mp_obj_t sensor_strike_time_ms_obj,
+    mp_obj_t sensor_release_pending_obj,
+    mp_obj_t sensor_release_time_ms_obj,
+    mp_int_t min_event_range_in,
+    mp_int_t release_pct_in,
+    mp_int_t activation_pct_in,
+    mp_int_t adjacent_guard_pct_in,
+    mp_int_t velocity_window_pct_in,
+    mp_int_t strike_window_pct_in,
+    mp_obj_t event_words_obj) {
+    ensure_initialized();
+
+    readings_buffer_view_t readings_view;
+    acquire_readings_buffer_view(&readings_view);
+
+    uint16_t active_sensors = (uint16_t)mp_arg_validate_int_range(
+        active_sensors_in, 0, (mp_int_t)readings_buffer_entry_count, MP_QSTR_active_sensors);
+    uint16_t min_event_range = (uint16_t)mp_arg_validate_int_range(
+        min_event_range_in, 0, 4095, MP_QSTR_min_event_range);
+    uint8_t release_pct = (uint8_t)mp_arg_validate_int_range(
+        release_pct_in, 0, 100, MP_QSTR_release_pct);
+    uint8_t activation_pct = (uint8_t)mp_arg_validate_int_range(
+        activation_pct_in, 0, 100, MP_QSTR_activation_pct);
+    uint8_t adjacent_guard_pct = (uint8_t)mp_arg_validate_int_range(
+        adjacent_guard_pct_in, 0, 100, MP_QSTR_adjacent_guard_pct);
+    uint8_t velocity_window_pct = (uint8_t)mp_arg_validate_int_range(
+        velocity_window_pct_in, 0, 100, MP_QSTR_velocity_window_pct);
+    uint8_t strike_window_pct = (uint8_t)mp_arg_validate_int_range(
+        strike_window_pct_in, 0, 100, MP_QSTR_strike_window_pct);
+
+    u16_buffer_view_t latest_values;
+    u8_buffer_view_t sensor_disabled;
+    u16_buffer_view_t sensor_min;
+    u16_buffer_view_t sensor_max;
+    u8_buffer_view_t sensor_polarity;
+    u8_buffer_view_t sensor_strike_pct;
+    u8_buffer_view_t sensor_on;
+    u8_buffer_view_t sensor_active;
+    u8_buffer_view_t sensor_strike_pending;
+    u32_buffer_view_t sensor_strike_time_ms;
+    u8_buffer_view_t sensor_release_pending;
+    u32_buffer_view_t sensor_release_time_ms;
+    u16_buffer_view_t event_words;
+
+    acquire_u16_buffer_view(latest_values_obj, active_sensors, &latest_values);
+    acquire_u8_buffer_view(sensor_disabled_obj, active_sensors, &sensor_disabled);
+    acquire_u16_buffer_view(sensor_min_obj, active_sensors, &sensor_min);
+    acquire_u16_buffer_view(sensor_max_obj, active_sensors, &sensor_max);
+    acquire_u8_buffer_view(sensor_polarity_obj, active_sensors, &sensor_polarity);
+    acquire_u8_buffer_view(sensor_strike_pct_obj, active_sensors, &sensor_strike_pct);
+    acquire_u8_buffer_view(sensor_on_obj, active_sensors, &sensor_on);
+    acquire_u8_buffer_view(sensor_active_obj, active_sensors, &sensor_active);
+    acquire_u8_buffer_view(sensor_strike_pending_obj, active_sensors, &sensor_strike_pending);
+    acquire_u32_buffer_view(sensor_strike_time_ms_obj, active_sensors, &sensor_strike_time_ms);
+    acquire_u8_buffer_view(sensor_release_pending_obj, active_sensors, &sensor_release_pending);
+    acquire_u32_buffer_view(sensor_release_time_ms_obj, active_sensors, &sensor_release_time_ms);
+    acquire_u16_buffer_view(event_words_obj, 0, &event_words);
+
+    size_t event_capacity = event_words.len / 3;
+    size_t event_count = 0;
+    uint32_t now_ms = supervisor_ticks_ms32();
+
+    for (uint16_t sensor_idx = 0; sensor_idx < active_sensors; sensor_idx++) {
+        if (sensor_disabled.ptr[sensor_idx]) {
+            latest_values.ptr[sensor_idx] = 0;
+            continue;
+        }
+
+        uint16_t value = read_sensor_value_at_index(&readings_view, sensor_idx);
+        latest_values.ptr[sensor_idx] = value;
+        if (value == 0) {
+            continue;
+        }
+
+        if (value < sensor_min.ptr[sensor_idx]) {
+            sensor_min.ptr[sensor_idx] = value;
+        }
+        if (value > sensor_max.ptr[sensor_idx] && should_update_max_for_sensor(
+            sensor_idx, active_sensors, &sensor_disabled, &sensor_min, &sensor_max,
+            &latest_values, &sensor_polarity, min_event_range, adjacent_guard_pct)) {
+            sensor_max.ptr[sensor_idx] = value;
+        }
+
+        uint16_t min_v = sensor_min.ptr[sensor_idx];
+        uint16_t max_v = sensor_max.ptr[sensor_idx];
+        uint16_t rng = max_v - min_v;
+        if (rng < min_event_range) {
+            sensor_on.ptr[sensor_idx] = 0;
+            sensor_active.ptr[sensor_idx] = 0;
+            sensor_strike_pending.ptr[sensor_idx] = 0;
+            sensor_strike_time_ms.ptr[sensor_idx] = 0;
+            sensor_release_pending.ptr[sensor_idx] = 0;
+            sensor_release_time_ms.ptr[sensor_idx] = 0;
+            continue;
+        }
+
+        uint8_t strike_pct = sensor_strike_pct.ptr[sensor_idx];
+        if (strike_pct > 100) {
+            strike_pct = 100;
+        }
+        uint8_t velocity_start_pct = strike_pct > strike_window_pct ? strike_pct - strike_window_pct : 0;
+        uint8_t release_velocity_pct = strike_pct + velocity_window_pct;
+        if (release_velocity_pct > 100) {
+            release_velocity_pct = 100;
+        }
+        uint8_t rel_pct = release_pct < strike_pct ? release_pct : strike_pct;
+
+        bool reversed = sensor_polarity.ptr[sensor_idx] != 0;
+        uint16_t activation_thr = 0;
+        uint16_t strike_thr = 0;
+        uint16_t velocity_start_thr = 0;
+        uint16_t release_velocity_thr = 0;
+        uint16_t release_thr = 0;
+        bool is_active = false;
+        if (!reversed) {
+            activation_thr = (uint16_t)(min_v + ((uint32_t)rng * activation_pct) / 100u);
+            strike_thr = (uint16_t)(min_v + ((uint32_t)rng * strike_pct) / 100u);
+            velocity_start_thr = (uint16_t)(min_v + ((uint32_t)rng * velocity_start_pct) / 100u);
+            release_velocity_thr = (uint16_t)(min_v + ((uint32_t)rng * release_velocity_pct) / 100u);
+            release_thr = (uint16_t)(min_v + ((uint32_t)rng * rel_pct) / 100u);
+            is_active = value >= activation_thr;
+        } else {
+            activation_thr = (uint16_t)(max_v - ((uint32_t)rng * activation_pct) / 100u);
+            strike_thr = (uint16_t)(max_v - ((uint32_t)rng * strike_pct) / 100u);
+            velocity_start_thr = (uint16_t)(max_v - ((uint32_t)rng * velocity_start_pct) / 100u);
+            release_velocity_thr = (uint16_t)(max_v - ((uint32_t)rng * release_velocity_pct) / 100u);
+            release_thr = (uint16_t)(max_v - ((uint32_t)rng * rel_pct) / 100u);
+            is_active = value <= activation_thr;
+        }
+        sensor_active.ptr[sensor_idx] = is_active ? 1 : 0;
+
+        if (!sensor_on.ptr[sensor_idx]) {
+            if (!sensor_strike_pending.ptr[sensor_idx]) {
+                if ((!reversed && value >= velocity_start_thr) ||
+                    (reversed && value <= velocity_start_thr)) {
+                    sensor_strike_pending.ptr[sensor_idx] = 1;
+                    sensor_strike_time_ms.ptr[sensor_idx] = now_ms;
+                }
+            } else {
+                bool crossed_strike = (!reversed && value >= strike_thr) ||
+                    (reversed && value <= strike_thr);
+                bool fell_back = (!reversed && value < velocity_start_thr) ||
+                    (reversed && value > velocity_start_thr);
+                if (crossed_strike) {
+                    uint32_t dt = now_ms - sensor_strike_time_ms.ptr[sensor_idx];
+                    if (dt > 0xFFFF) {
+                        dt = 0xFFFF;
+                    }
+                    if (event_count < event_capacity) {
+                        size_t base = event_count * 3;
+                        event_words.ptr[base + 0] = sensor_idx;
+                        event_words.ptr[base + 1] = 1;
+                        event_words.ptr[base + 2] = (uint16_t)dt;
+                        event_count++;
+                    }
+                    sensor_on.ptr[sensor_idx] = 1;
+                    sensor_strike_pending.ptr[sensor_idx] = 0;
+                    sensor_release_pending.ptr[sensor_idx] = 0;
+                    sensor_release_time_ms.ptr[sensor_idx] = 0;
+                } else if (fell_back) {
+                    sensor_strike_pending.ptr[sensor_idx] = 0;
+                }
+            }
+        } else {
+            if (!sensor_release_pending.ptr[sensor_idx]) {
+                if ((!reversed && value <= release_velocity_thr) ||
+                    (reversed && value >= release_velocity_thr)) {
+                    sensor_release_pending.ptr[sensor_idx] = 1;
+                    sensor_release_time_ms.ptr[sensor_idx] = now_ms;
+                }
+            } else {
+                bool crossed_release = (!reversed && value <= release_thr) ||
+                    (reversed && value >= release_thr);
+                bool fell_back = (!reversed && value > release_velocity_thr) ||
+                    (reversed && value < release_velocity_thr);
+                if (crossed_release) {
+                    uint32_t dt = now_ms - sensor_release_time_ms.ptr[sensor_idx];
+                    if (dt > 0xFFFF) {
+                        dt = 0xFFFF;
+                    }
+                    if (event_count < event_capacity) {
+                        size_t base = event_count * 3;
+                        event_words.ptr[base + 0] = sensor_idx;
+                        event_words.ptr[base + 1] = 0;
+                        event_words.ptr[base + 2] = (uint16_t)dt;
+                        event_count++;
+                    }
+                    sensor_on.ptr[sensor_idx] = 0;
+                    sensor_strike_pending.ptr[sensor_idx] = 0;
+                    sensor_release_pending.ptr[sensor_idx] = 0;
+                    sensor_release_time_ms.ptr[sensor_idx] = 0;
+                } else if (fell_back) {
+                    sensor_release_pending.ptr[sensor_idx] = 0;
+                }
+            }
+        }
+    }
+
+    return event_count;
 }
 
 uint8_t common_hal_photonsensorscan_slot_count(void) {

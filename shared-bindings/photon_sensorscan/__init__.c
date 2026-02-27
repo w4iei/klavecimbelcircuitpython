@@ -258,6 +258,109 @@ static mp_obj_t photonsensorscan_refresh_status(void) {
 }
 MP_DEFINE_CONST_FUN_OBJ_0(photonsensorscan_refresh_status_obj, photonsensorscan_refresh_status);
 
+//| def process_scan_events(
+//|     *,
+//|     active_sensors: int,
+//|     latest_values: WriteableBuffer,
+//|     sensor_disabled: WriteableBuffer,
+//|     sensor_min: WriteableBuffer,
+//|     sensor_max: WriteableBuffer,
+//|     sensor_polarity: WriteableBuffer,
+//|     sensor_strike_pct: WriteableBuffer,
+//|     sensor_on: WriteableBuffer,
+//|     sensor_active: WriteableBuffer,
+//|     sensor_strike_pending: WriteableBuffer,
+//|     sensor_strike_time_ms: WriteableBuffer,
+//|     sensor_release_pending: WriteableBuffer,
+//|     sensor_release_time_ms: WriteableBuffer,
+//|     min_event_range: int,
+//|     release_pct: int,
+//|     activation_pct: int,
+//|     adjacent_guard_pct: int = 30,
+//|     velocity_window_pct: int = 20,
+//|     strike_window_pct: int = 5,
+//|     event_words: WriteableBuffer,
+//| ) -> int:
+//|     """Process one full scan in C and write compact events into ``event_words``.
+//|
+//|     ``event_words`` must be an ``array('H')`` where each event takes 3 words:
+//|     ``(sensor_idx, state, dt_ms)``.
+//|     """
+//|     ...
+//|
+static mp_obj_t photonsensorscan_process_scan_events(size_t n_args, const mp_obj_t *pos_args, mp_map_t *kw_args) {
+    enum {
+        ARG_active_sensors,
+        ARG_latest_values,
+        ARG_sensor_disabled,
+        ARG_sensor_min,
+        ARG_sensor_max,
+        ARG_sensor_polarity,
+        ARG_sensor_strike_pct,
+        ARG_sensor_on,
+        ARG_sensor_active,
+        ARG_sensor_strike_pending,
+        ARG_sensor_strike_time_ms,
+        ARG_sensor_release_pending,
+        ARG_sensor_release_time_ms,
+        ARG_min_event_range,
+        ARG_release_pct,
+        ARG_activation_pct,
+        ARG_adjacent_guard_pct,
+        ARG_velocity_window_pct,
+        ARG_strike_window_pct,
+        ARG_event_words,
+    };
+    static const mp_arg_t allowed_args[] = {
+        { MP_QSTR_active_sensors, MP_ARG_REQUIRED | MP_ARG_KW_ONLY | MP_ARG_INT },
+        { MP_QSTR_latest_values, MP_ARG_REQUIRED | MP_ARG_KW_ONLY | MP_ARG_OBJ },
+        { MP_QSTR_sensor_disabled, MP_ARG_REQUIRED | MP_ARG_KW_ONLY | MP_ARG_OBJ },
+        { MP_QSTR_sensor_min, MP_ARG_REQUIRED | MP_ARG_KW_ONLY | MP_ARG_OBJ },
+        { MP_QSTR_sensor_max, MP_ARG_REQUIRED | MP_ARG_KW_ONLY | MP_ARG_OBJ },
+        { MP_QSTR_sensor_polarity, MP_ARG_REQUIRED | MP_ARG_KW_ONLY | MP_ARG_OBJ },
+        { MP_QSTR_sensor_strike_pct, MP_ARG_REQUIRED | MP_ARG_KW_ONLY | MP_ARG_OBJ },
+        { MP_QSTR_sensor_on, MP_ARG_REQUIRED | MP_ARG_KW_ONLY | MP_ARG_OBJ },
+        { MP_QSTR_sensor_active, MP_ARG_REQUIRED | MP_ARG_KW_ONLY | MP_ARG_OBJ },
+        { MP_QSTR_sensor_strike_pending, MP_ARG_REQUIRED | MP_ARG_KW_ONLY | MP_ARG_OBJ },
+        { MP_QSTR_sensor_strike_time_ms, MP_ARG_REQUIRED | MP_ARG_KW_ONLY | MP_ARG_OBJ },
+        { MP_QSTR_sensor_release_pending, MP_ARG_REQUIRED | MP_ARG_KW_ONLY | MP_ARG_OBJ },
+        { MP_QSTR_sensor_release_time_ms, MP_ARG_REQUIRED | MP_ARG_KW_ONLY | MP_ARG_OBJ },
+        { MP_QSTR_min_event_range, MP_ARG_REQUIRED | MP_ARG_KW_ONLY | MP_ARG_INT },
+        { MP_QSTR_release_pct, MP_ARG_REQUIRED | MP_ARG_KW_ONLY | MP_ARG_INT },
+        { MP_QSTR_activation_pct, MP_ARG_REQUIRED | MP_ARG_KW_ONLY | MP_ARG_INT },
+        { MP_QSTR_adjacent_guard_pct, MP_ARG_KW_ONLY | MP_ARG_INT, {.u_int = 30} },
+        { MP_QSTR_velocity_window_pct, MP_ARG_KW_ONLY | MP_ARG_INT, {.u_int = 20} },
+        { MP_QSTR_strike_window_pct, MP_ARG_KW_ONLY | MP_ARG_INT, {.u_int = 5} },
+        { MP_QSTR_event_words, MP_ARG_REQUIRED | MP_ARG_KW_ONLY | MP_ARG_OBJ },
+    };
+    mp_arg_val_t args[MP_ARRAY_SIZE(allowed_args)];
+    mp_arg_parse_all(n_args, pos_args, kw_args, MP_ARRAY_SIZE(allowed_args), allowed_args, args);
+
+    size_t event_count = common_hal_photonsensorscan_process_scan_events(
+        args[ARG_active_sensors].u_int,
+        args[ARG_latest_values].u_obj,
+        args[ARG_sensor_disabled].u_obj,
+        args[ARG_sensor_min].u_obj,
+        args[ARG_sensor_max].u_obj,
+        args[ARG_sensor_polarity].u_obj,
+        args[ARG_sensor_strike_pct].u_obj,
+        args[ARG_sensor_on].u_obj,
+        args[ARG_sensor_active].u_obj,
+        args[ARG_sensor_strike_pending].u_obj,
+        args[ARG_sensor_strike_time_ms].u_obj,
+        args[ARG_sensor_release_pending].u_obj,
+        args[ARG_sensor_release_time_ms].u_obj,
+        args[ARG_min_event_range].u_int,
+        args[ARG_release_pct].u_int,
+        args[ARG_activation_pct].u_int,
+        args[ARG_adjacent_guard_pct].u_int,
+        args[ARG_velocity_window_pct].u_int,
+        args[ARG_strike_window_pct].u_int,
+        args[ARG_event_words].u_obj);
+    return mp_obj_new_int_from_uint((mp_uint_t)event_count);
+}
+MP_DEFINE_CONST_FUN_OBJ_KW(photonsensorscan_process_scan_events_obj, 0, photonsensorscan_process_scan_events);
+
 //| def debug_state() -> dict:
 //|     """Return a snapshot of low-level driver debug counters/state."""
 //|     ...
@@ -372,6 +475,7 @@ static const mp_rom_map_elem_t photonsensorscan_module_globals_table[] = {
     { MP_ROM_QSTR(MP_QSTR_reset_device), MP_ROM_PTR(&photonsensorscan_reset_device_obj) },
     { MP_ROM_QSTR(MP_QSTR_reset_all_banks), MP_ROM_PTR(&photonsensorscan_reset_all_banks_obj) },
     { MP_ROM_QSTR(MP_QSTR_refresh_status), MP_ROM_PTR(&photonsensorscan_refresh_status_obj) },
+    { MP_ROM_QSTR(MP_QSTR_process_scan_events), MP_ROM_PTR(&photonsensorscan_process_scan_events_obj) },
     { MP_ROM_QSTR(MP_QSTR_debug_state), MP_ROM_PTR(&photonsensorscan_debug_state_obj) },
     { MP_ROM_QSTR(MP_QSTR_debug_miso_probe), MP_ROM_PTR(&photonsensorscan_debug_miso_probe_obj) },
 };

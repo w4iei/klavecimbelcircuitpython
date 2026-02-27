@@ -6,6 +6,7 @@
 
 #pragma once
 
+#include <stddef.h>
 #include <stdbool.h>
 #include <stdint.h>
 
@@ -80,5 +81,26 @@ bool common_hal_photonsensorscan_crcerr_fuse(mp_int_t bank);
 void common_hal_photonsensorscan_reset_device(mp_int_t bank);
 void common_hal_photonsensorscan_reset_all_banks(void);
 void common_hal_photonsensorscan_refresh_status(void);
+size_t common_hal_photonsensorscan_process_scan_events(
+    mp_int_t active_sensors,
+    mp_obj_t latest_values,
+    mp_obj_t sensor_disabled,
+    mp_obj_t sensor_min,
+    mp_obj_t sensor_max,
+    mp_obj_t sensor_polarity,
+    mp_obj_t sensor_strike_pct,
+    mp_obj_t sensor_on,
+    mp_obj_t sensor_active,
+    mp_obj_t sensor_strike_pending,
+    mp_obj_t sensor_strike_time_ms,
+    mp_obj_t sensor_release_pending,
+    mp_obj_t sensor_release_time_ms,
+    mp_int_t min_event_range,
+    mp_int_t release_pct,
+    mp_int_t activation_pct,
+    mp_int_t adjacent_guard_pct,
+    mp_int_t velocity_window_pct,
+    mp_int_t strike_window_pct,
+    mp_obj_t event_words);
 uint8_t common_hal_photonsensorscan_slot_count(void);
 void common_hal_photonsensorscan_get_debug_state(photonsensorscan_debug_state_t *out_state);
