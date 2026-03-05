@@ -69,7 +69,7 @@ void common_hal_photonsensorscan_init(
     const uint8_t bank_spi_bus_in[PHOTON_SENSORSCAN_MAX_BANKS],
     uint8_t slot_count_in, const uint8_t adc_channels_in[PHOTON_SENSORSCAN_MAX_SLOTS], const int8_t emitter_bits_in[PHOTON_SENSORSCAN_MAX_SLOTS],
     mp_obj_t readings_buffer,
-    uint32_t settle_us_in, uint32_t baudrate, uint8_t polarity, uint8_t phase);
+    uint32_t settle_us_in, uint32_t baudrate, uint8_t polarity, uint8_t phase, uint8_t osr_mode_in);
 void common_hal_photonsensorscan_deinit(void);
 
 uint16_t common_hal_photonsensorscan_refresh_sensor(mp_int_t bank, mp_int_t slot);
@@ -98,7 +98,6 @@ size_t common_hal_photonsensorscan_process_scan_events(
     mp_int_t min_event_range,
     mp_int_t release_pct,
     mp_int_t activation_pct,
-    mp_int_t adjacent_guard_pct,
     mp_int_t velocity_window_pct,
     mp_int_t strike_window_pct,
     mp_obj_t event_words);

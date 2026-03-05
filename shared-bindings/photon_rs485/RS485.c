@@ -141,20 +141,29 @@ static mp_obj_t photon_rs485_obj_clear_auto_replies(mp_obj_t self_in) {
 }
 MP_DEFINE_CONST_FUN_OBJ_1(photon_rs485_clear_auto_replies_obj, photon_rs485_obj_clear_auto_replies);
 
-//|     def send_frame(self, frame_type: int, target_id: int, payload: ReadableBuffer, seq: int) -> None:
+//|     def send_frame(self, frame_type: int, target_id: int, payload: ReadableBuffer, seq: int, *, ack_timeout_us: int = 2000) -> int:
 //|         """Send a framed payload with CRC32.
 //|
-//|         TX uses DMA on RP2350 for low CPU overhead.
+//|         The ``source_id`` field in the frame header is set automatically from
+//|         the driver's ``device_id``.  TX uses DMA on RP2350 for low CPU
+//|         overhead.
+//|
+//|         When ``ack_timeout_us`` is non-zero the driver will tight-poll in C
+//|         for a reply frame matching ``frame_type`` (mapped to its expected ACK
+//|         type), ``seq``, and ``target_id == self.device_id``.  Returns the
+//|         round-trip latency in microseconds (minimum 1) on success, or 0 on
+//|         timeout / fire-and-forget.
 //|         """
 //|         ...
 //|
 static mp_obj_t photon_rs485_obj_send_frame(size_t n_args, const mp_obj_t *pos_args, mp_map_t *kw_args) {
-    enum { ARG_frame_type, ARG_target_id, ARG_payload, ARG_seq };
+    enum { ARG_frame_type, ARG_target_id, ARG_payload, ARG_seq, ARG_ack_timeout_us };
     static const mp_arg_t allowed_args[] = {
         { MP_QSTR_frame_type, MP_ARG_REQUIRED | MP_ARG_INT },
         { MP_QSTR_target_id, MP_ARG_REQUIRED | MP_ARG_INT },
         { MP_QSTR_payload, MP_ARG_REQUIRED | MP_ARG_OBJ },
         { MP_QSTR_seq, MP_ARG_REQUIRED | MP_ARG_INT },
+        { MP_QSTR_ack_timeout_us, MP_ARG_KW_ONLY | MP_ARG_INT, {.u_int = 2000} },
     };
 
     photon_rs485_rs485_obj_t *self = MP_OBJ_TO_PTR(pos_args[0]);
@@ -166,19 +175,20 @@ static mp_obj_t photon_rs485_obj_send_frame(size_t n_args, const mp_obj_t *pos_a
     uint8_t frame_type = (uint8_t)mp_arg_validate_int_range(args[ARG_frame_type].u_int, 0, 0xFF, MP_QSTR_frame_type);
     uint8_t target_id = (uint8_t)mp_arg_validate_int_range(args[ARG_target_id].u_int, 0, 0xFF, MP_QSTR_target_id);
     uint16_t seq = (uint16_t)mp_arg_validate_int_range(args[ARG_seq].u_int, 0, 0xFFFF, MP_QSTR_seq);
+    uint32_t ack_timeout_us = (uint32_t)mp_arg_validate_int_min(args[ARG_ack_timeout_us].u_int, 0, MP_QSTR_ack_timeout_us);
 
     mp_buffer_info_t payload_buf;
     mp_get_buffer_raise(args[ARG_payload].u_obj, &payload_buf, MP_BUFFER_READ);
 
-    common_hal_photon_rs485_send_frame(self, frame_type, target_id,
-        payload_buf.buf, payload_buf.len, seq);
+    uint32_t result = common_hal_photon_rs485_send_frame(self, frame_type, target_id,
+        payload_buf.buf, payload_buf.len, seq, ack_timeout_us);
 
-    return mp_const_none;
+    return MP_OBJ_NEW_SMALL_INT(result);
 }
 MP_DEFINE_CONST_FUN_OBJ_KW(photon_rs485_send_frame_obj, 1, photon_rs485_obj_send_frame);
 
 //|     def read_frames(self):
-//|         """Return a list of ``(frame_type, target_id, payload, seq)`` tuples."""
+//|         """Return a list of ``(frame_type, target_id, source_id, payload, seq)`` tuples."""
 //|         ...
 //|
 static mp_obj_t photon_rs485_obj_read_frames(mp_obj_t self_in) {

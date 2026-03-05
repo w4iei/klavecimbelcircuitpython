@@ -22,11 +22,23 @@ MP_DEFINE_BYTES_OBJ(photon_rs485_frame_preamble_obj, photon_rs485_frame_preamble
 //| Enable it per-board by setting ``CIRCUITPY_PHOTON_RS485 = 1`` in that
 //| board's ``mpconfigboard.mk``.
 //|
+//| Frame header layout (11 bytes)::
+//|
+//|     Offset  Field           Size
+//|     0-3     preamble        4 bytes (0xA5 0x5A 0xC3 0x3C)
+//|     4       frame_type      1 byte  (ASCII command/response type)
+//|     5       target_id       1 byte  (destination device ID, 0 = broadcast)
+//|     6       source_id       1 byte  (sender's device ID)
+//|     7-8     payload_length  2 bytes (little-endian)
+//|     9-10    seq             2 bytes (little-endian sequence number)
+//|
+//| Followed by ``payload_length`` bytes of payload and a 4-byte CRC32 trailer.
+//|
 //| Example (manual framing in Python)::
 //|
-//|     for frame_type, target_id, payload, seq in bus.read_frames():
+//|     for frame_type, target_id, source_id, payload, seq in bus.read_frames():
 //|         if frame_type == photon_rs485.FRAME_TYPE_PING:
-//|             bus.send_frame(photon_rs485.FRAME_TYPE_PONG, device_id, b"", seq)
+//|             bus.send_frame(photon_rs485.FRAME_TYPE_PONG, source_id, b"", seq)
 //| """
 //|
 static const mp_rom_map_elem_t photon_rs485_module_globals_table[] = {
@@ -34,7 +46,7 @@ static const mp_rom_map_elem_t photon_rs485_module_globals_table[] = {
     { MP_ROM_QSTR(MP_QSTR_RS485), MP_ROM_PTR(&photon_rs485_rs485_type) },
 
     { MP_ROM_QSTR(MP_QSTR_FRAME_PREAMBLE), MP_ROM_PTR(&photon_rs485_frame_preamble_obj) },
-    { MP_ROM_QSTR(MP_QSTR_FRAME_HEADER_LEN), MP_ROM_INT(10) },
+    { MP_ROM_QSTR(MP_QSTR_FRAME_HEADER_LEN), MP_ROM_INT(11) },
     { MP_ROM_QSTR(MP_QSTR_FRAME_TRAILER_LEN), MP_ROM_INT(4) },
 
     { MP_ROM_QSTR(MP_QSTR_FRAME_TYPE_PING), MP_ROM_INT('P') },

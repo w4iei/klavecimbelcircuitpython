@@ -18,13 +18,27 @@
 
 #include "hardware/gpio.h"
 #include "hardware/dma.h"
+#include "hardware/timer.h"
 #include "hardware/uart.h"
 
 #define NO_PIN 0xff
 
 #define FRAME_PREAMBLE_LEN (4)
-#define FRAME_HEADER_LEN (10)
+#define FRAME_HEADER_LEN (11)
 #define FRAME_TRAILER_LEN (4)
+
+static uint8_t photon_rs485_expected_ack_type(uint8_t sent_type) {
+    switch (sent_type) {
+        case 'E': return 'A';  // EVENT → EVENT_ACK
+        case 'P': return 'O';  // PING → PONG
+        case 'R': return 'D';  // DATA_REQ → DATA_RESP
+        case 'S': return 's';  // STATS_REQ → STATS_RESP
+        case 'C': return 'c';  // CFG_SET → CFG_ACK
+        case 'M': return 'm';  // MINMAX_REQ → MINMAX_RESP
+        case 'T': return 't';  // TRACE_REQ → TRACE_RESP
+        default:  return 0;    // Unknown — no ACK expected
+    }
+}
 
 static const uint8_t photon_rs485_preamble[FRAME_PREAMBLE_LEN] = { 0xA5, 0x5A, 0xC3, 0x3C };
 
@@ -94,10 +108,11 @@ static size_t photon_rs485_prepare_frame(photon_rs485_rs485_obj_t *self,
     memcpy(buf, photon_rs485_preamble, FRAME_PREAMBLE_LEN);
     buf[4] = frame_type;
     buf[5] = target_id;
-    buf[6] = (uint8_t)(payload_len & 0xFF);
-    buf[7] = (uint8_t)((payload_len >> 8) & 0xFF);
-    buf[8] = (uint8_t)(seq & 0xFF);
-    buf[9] = (uint8_t)((seq >> 8) & 0xFF);
+    buf[6] = self->device_id;  // source_id
+    buf[7] = (uint8_t)(payload_len & 0xFF);
+    buf[8] = (uint8_t)((payload_len >> 8) & 0xFF);
+    buf[9] = (uint8_t)(seq & 0xFF);
+    buf[10] = (uint8_t)((seq >> 8) & 0xFF);
 
     uint8_t *payload_dst = buf + FRAME_HEADER_LEN;
     if (!payload_inplace && payload_len > 0) {
@@ -224,13 +239,114 @@ void common_hal_photon_rs485_deinit(photon_rs485_rs485_obj_t *self) {
     }
 }
 
-void common_hal_photon_rs485_send_frame(photon_rs485_rs485_obj_t *self,
+uint32_t common_hal_photon_rs485_send_frame(photon_rs485_rs485_obj_t *self,
     uint8_t frame_type, uint8_t target_id,
-    const uint8_t *payload, size_t payload_len, uint16_t seq) {
+    const uint8_t *payload, size_t payload_len, uint16_t seq,
+    uint32_t ack_timeout_us) {
 
     size_t total_len = photon_rs485_prepare_frame(self, frame_type, target_id,
         payload, payload_len, seq, false);
     photon_rs485_send_prepared(self, total_len);
+
+    // Fire-and-forget when no ACK is expected
+    if (ack_timeout_us == 0) {
+        return 0;
+    }
+
+    uint8_t expected_ack = photon_rs485_expected_ack_type(frame_type);
+    if (expected_ack == 0) {
+        return 0;  // No known ACK type for this frame
+    }
+
+    // Tight-poll for ACK entirely in C — no Python overhead in the critical path
+    uint64_t start = time_us_64();
+    uint64_t deadline = start + (uint64_t)ack_timeout_us;
+    size_t max_frame_len = FRAME_HEADER_LEN + (size_t)self->max_payload + FRAME_TRAILER_LEN;
+    size_t buf_before = self->buffer_len;
+
+    while (time_us_64() < deadline) {
+        photon_rs485_fill_rx_buffer(self);
+
+        // Scan buffer for a valid ACK frame
+        size_t offset = 0;
+        while (true) {
+            size_t remaining = self->buffer_len - offset;
+            if (remaining < FRAME_HEADER_LEN + FRAME_TRAILER_LEN) {
+                break;
+            }
+
+            int32_t pi = photon_rs485_find_preamble(self->buffer, offset, self->buffer_len);
+            if (pi < 0) {
+                break;
+            }
+            offset = (size_t)pi;
+            remaining = self->buffer_len - offset;
+            if (remaining < FRAME_HEADER_LEN) {
+                break;
+            }
+
+            uint8_t rx_frame_type = self->buffer[offset + 4];
+            uint8_t rx_target_id = self->buffer[offset + 5];
+            // offset + 6 = source_id (not needed for matching)
+            uint16_t length = (uint16_t)(self->buffer[offset + 7] | (self->buffer[offset + 8] << 8));
+            uint16_t s = (uint16_t)(self->buffer[offset + 9] | (self->buffer[offset + 10] << 8));
+
+            size_t frame_total = FRAME_HEADER_LEN + (size_t)length + FRAME_TRAILER_LEN;
+            if (length > self->max_payload || frame_total > max_frame_len) {
+                offset += 1;
+                continue;
+            }
+            if (remaining < frame_total) {
+                break;  // Incomplete frame, wait for more data
+            }
+
+            // Validate CRC
+            size_t payload_start = offset + FRAME_HEADER_LEN;
+            size_t crc_start = payload_start + length;
+            uint32_t crc_rx = (uint32_t)(self->buffer[crc_start] |
+                (self->buffer[crc_start + 1] << 8) |
+                (self->buffer[crc_start + 2] << 16) |
+                (self->buffer[crc_start + 3] << 24));
+            uint32_t crc_calc = photon_rs485_crc32(self->buffer + payload_start, length);
+
+            if (crc_rx != crc_calc) {
+                mp_printf(&mp_plat_print, "[ACK_DBG] CRC fail at off=%u type=%c tid=%u seq=%u len=%u\n",
+                    (unsigned)offset, rx_frame_type, rx_target_id, s, (unsigned)length);
+                offset += 1;
+                continue;
+            }
+
+            // Match ACK: correct type + seq + addressed to us
+            if (rx_frame_type == expected_ack && s == seq &&
+                (self->device_id == 0 || rx_target_id == self->device_id || rx_target_id == 0)) {
+                // Remove only the matched ACK frame, preserve everything else
+                size_t end = offset + frame_total;
+                if (end < self->buffer_len) {
+                    memmove(self->buffer + offset, self->buffer + end,
+                        self->buffer_len - end);
+                }
+                self->buffer_len -= frame_total;
+                uint32_t elapsed = (uint32_t)(time_us_64() - start);
+                return elapsed > 0 ? elapsed : 1;
+            }
+
+            // Not our ACK — log why it didn't match
+            mp_printf(&mp_plat_print,
+                "[ACK_DBG] no_match type=%c(want %c) seq=%u(want %u) tid=%u(my %u)\n",
+                rx_frame_type, expected_ack, s, seq, rx_target_id, self->device_id);
+
+            // Not our ACK — skip past, leave in buffer for read_frames
+            offset += frame_total;
+        }
+    }
+
+    // Timeout — log buffer state
+    uint32_t elapsed_timeout = (uint32_t)(time_us_64() - start);
+    mp_printf(&mp_plat_print,
+        "[ACK_DBG] TIMEOUT after %uus buf_before=%u buf_after=%u\n",
+        elapsed_timeout, (unsigned)buf_before, (unsigned)self->buffer_len);
+
+    return 0;  // Timeout
 }
 
 mp_obj_t common_hal_photon_rs485_read_frames(photon_rs485_rs485_obj_t *self) {
@@ -264,8 +380,9 @@ mp_obj_t common_hal_photon_rs485_read_frames(photon_rs485_rs485_obj_t *self) {
 
         uint8_t frame_type = self->buffer[offset + 4];
         uint8_t target_id = self->buffer[offset + 5];
-        uint16_t length = (uint16_t)(self->buffer[offset + 6] | (self->buffer[offset + 7] << 8));
-        uint16_t seq = (uint16_t)(self->buffer[offset + 8] | (self->buffer[offset + 9] << 8));
+        uint8_t source_id = self->buffer[offset + 6];
+        uint16_t length = (uint16_t)(self->buffer[offset + 7] | (self->buffer[offset + 8] << 8));
+        uint16_t seq = (uint16_t)(self->buffer[offset + 9] | (self->buffer[offset + 10] << 8));
 
         size_t total_len = FRAME_HEADER_LEN + (size_t)length + FRAME_TRAILER_LEN;
         if (length > self->max_payload || total_len > max_frame_len) {
@@ -291,7 +408,7 @@ mp_obj_t common_hal_photon_rs485_read_frames(photon_rs485_rs485_obj_t *self) {
         }
 
         bool accept = (self->device_id == 0) || (target_id == 0) || (target_id == self->device_id);
-        bool addressed = (target_id == self->device_id || target_id == 0);
+        bool addressed = (self->device_id == 0) || (target_id == self->device_id) || (target_id == 0);
         if (self->auto_reply_enabled && addressed) {
             size_t reply_count = 0;
             mp_obj_t *reply_items = NULL;
@@ -311,20 +428,21 @@ mp_obj_t common_hal_photon_rs485_read_frames(photon_rs485_rs485_obj_t *self) {
                     mp_raise_ValueError(MP_ERROR_TEXT("payload too large"));
                 }
                 size_t reply_len = photon_rs485_prepare_frame(self, response_type,
-                    self->device_id, reply_buf.buf, reply_buf.len, seq, false);
+                    source_id, reply_buf.buf, reply_buf.len, seq, false);
                 photon_rs485_send_prepared(self, reply_len);
                 break;
             }
         }
         if (accept) {
             mp_obj_t payload_obj = mp_obj_new_bytes(self->buffer + payload_start, length);
-            mp_obj_t items[4] = {
+            mp_obj_t items[5] = {
                 MP_OBJ_NEW_SMALL_INT(frame_type),
                 MP_OBJ_NEW_SMALL_INT(target_id),
+                MP_OBJ_NEW_SMALL_INT(source_id),
                 payload_obj,
                 MP_OBJ_NEW_SMALL_INT(seq),
             };
-            mp_obj_list_append(frames, mp_obj_new_tuple(4, items));
+            mp_obj_list_append(frames, mp_obj_new_tuple(5, items));
         }
 
         offset += total_len;

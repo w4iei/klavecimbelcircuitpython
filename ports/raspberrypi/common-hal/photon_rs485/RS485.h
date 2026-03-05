@@ -37,7 +37,8 @@ void common_hal_photon_rs485_construct(photon_rs485_rs485_obj_t *self,
     uint16_t rx_buffer_size, uint32_t tx_enable_delay_us);
 bool common_hal_photon_rs485_deinited(photon_rs485_rs485_obj_t *self);
 void common_hal_photon_rs485_deinit(photon_rs485_rs485_obj_t *self);
-void common_hal_photon_rs485_send_frame(photon_rs485_rs485_obj_t *self,
+uint32_t common_hal_photon_rs485_send_frame(photon_rs485_rs485_obj_t *self,
     uint8_t frame_type, uint8_t target_id,
-    const uint8_t *payload, size_t payload_len, uint16_t seq);
+    const uint8_t *payload, size_t payload_len, uint16_t seq,
+    uint32_t ack_timeout_us);
 mp_obj_t common_hal_photon_rs485_read_frames(photon_rs485_rs485_obj_t *self);

@@ -50,8 +50,13 @@ static void parse_optional_spi_tuple(mp_obj_t tuple_obj, qstr arg_name,
 //|     baudrate: int = 15000000,
 //|     polarity: int = 0,
 //|     phase: int = 0,
+//|     osr_mode: int = 0,
 //| ) -> None:
-//|     """Initialize scanner hardware and bind a persistent output buffer for all bank/slot values."""
+//|     """Initialize scanner hardware and bind a persistent output buffer for all bank/slot values.
+//|
+//|     :param int osr_mode: Oversampling ratio (0=none, 1=2x, 2=4x, 3=8x, 4=16x, 5=32x, 6=64x, 7=128x).
+//|                          When OSR > 0, ADC outputs 16-bit values instead of 12-bit.
+//|     """
 //|     ...
 //|
 static mp_obj_t photonsensorscan_init(size_t n_args, const mp_obj_t *pos_args, mp_map_t *kw_args) {
@@ -68,6 +73,7 @@ static mp_obj_t photonsensorscan_init(size_t n_args, const mp_obj_t *pos_args, m
         ARG_baudrate,
         ARG_polarity,
         ARG_phase,
+        ARG_osr_mode,
     };
     static const mp_arg_t allowed_args[] = {
         { MP_QSTR_spi0, MP_ARG_KW_ONLY | MP_ARG_OBJ, {.u_obj = mp_const_none} },
@@ -82,6 +88,7 @@ static mp_obj_t photonsensorscan_init(size_t n_args, const mp_obj_t *pos_args, m
         { MP_QSTR_baudrate, MP_ARG_KW_ONLY | MP_ARG_INT, {.u_int = 15000000} },
         { MP_QSTR_polarity, MP_ARG_KW_ONLY | MP_ARG_INT, {.u_int = 0} },
         { MP_QSTR_phase, MP_ARG_KW_ONLY | MP_ARG_INT, {.u_int = 0} },
+        { MP_QSTR_osr_mode, MP_ARG_KW_ONLY | MP_ARG_INT, {.u_int = 0} },
     };
     mp_arg_val_t args[MP_ARRAY_SIZE(allowed_args)];
     mp_arg_parse_all(n_args, pos_args, kw_args, MP_ARRAY_SIZE(allowed_args), allowed_args, args);
@@ -145,6 +152,7 @@ static mp_obj_t photonsensorscan_init(size_t n_args, const mp_obj_t *pos_args, m
     uint32_t baudrate = (uint32_t)mp_arg_validate_int_min(args[ARG_baudrate].u_int, 1, MP_QSTR_baudrate);
     uint8_t polarity = (uint8_t)mp_arg_validate_int_range(args[ARG_polarity].u_int, 0, 1, MP_QSTR_polarity);
     uint8_t phase = (uint8_t)mp_arg_validate_int_range(args[ARG_phase].u_int, 0, 1, MP_QSTR_phase);
+    uint8_t osr_mode = (uint8_t)mp_arg_validate_int_range(args[ARG_osr_mode].u_int, 0, 7, MP_QSTR_osr_mode);
 
     common_hal_photonsensorscan_init(
         spi0_sck, spi0_mosi, spi0_miso,
@@ -154,7 +162,7 @@ static mp_obj_t photonsensorscan_init(size_t n_args, const mp_obj_t *pos_args, m
         bank_spi_bus,
         (uint8_t)adc_len, adc_channels, emitter_bits,
         args[ARG_readings_buffer].u_obj,
-        settle_us, baudrate, polarity, phase);
+        settle_us, baudrate, polarity, phase, osr_mode);
     return mp_const_none;
 }
 MP_DEFINE_CONST_FUN_OBJ_KW(photonsensorscan_init_obj, 0, photonsensorscan_init);
@@ -276,7 +284,6 @@ MP_DEFINE_CONST_FUN_OBJ_0(photonsensorscan_refresh_status_obj, photonsensorscan_
 //|     min_event_range: int,
 //|     release_pct: int,
 //|     activation_pct: int,
-//|     adjacent_guard_pct: int = 30,
 //|     velocity_window_pct: int = 20,
 //|     strike_window_pct: int = 5,
 //|     event_words: WriteableBuffer,
@@ -306,7 +313,6 @@ static mp_obj_t photonsensorscan_process_scan_events(size_t n_args, const mp_obj
         ARG_min_event_range,
         ARG_release_pct,
         ARG_activation_pct,
-        ARG_adjacent_guard_pct,
         ARG_velocity_window_pct,
         ARG_strike_window_pct,
         ARG_event_words,
@@ -328,7 +334,6 @@ static mp_obj_t photonsensorscan_process_scan_events(size_t n_args, const mp_obj
         { MP_QSTR_min_event_range, MP_ARG_REQUIRED | MP_ARG_KW_ONLY | MP_ARG_INT },
         { MP_QSTR_release_pct, MP_ARG_REQUIRED | MP_ARG_KW_ONLY | MP_ARG_INT },
         { MP_QSTR_activation_pct, MP_ARG_REQUIRED | MP_ARG_KW_ONLY | MP_ARG_INT },
-        { MP_QSTR_adjacent_guard_pct, MP_ARG_KW_ONLY | MP_ARG_INT, {.u_int = 30} },
         { MP_QSTR_velocity_window_pct, MP_ARG_KW_ONLY | MP_ARG_INT, {.u_int = 20} },
         { MP_QSTR_strike_window_pct, MP_ARG_KW_ONLY | MP_ARG_INT, {.u_int = 5} },
         { MP_QSTR_event_words, MP_ARG_REQUIRED | MP_ARG_KW_ONLY | MP_ARG_OBJ },
@@ -353,7 +358,6 @@ static mp_obj_t photonsensorscan_process_scan_events(size_t n_args, const mp_obj
         args[ARG_min_event_range].u_int,
         args[ARG_release_pct].u_int,
         args[ARG_activation_pct].u_int,
-        args[ARG_adjacent_guard_pct].u_int,
         args[ARG_velocity_window_pct].u_int,
         args[ARG_strike_window_pct].u_int,
         args[ARG_event_words].u_obj);

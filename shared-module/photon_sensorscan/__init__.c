@@ -51,7 +51,8 @@ static uint8_t emitter_mask_by_slot[PHOTON_SENSORSCAN_MAX_SLOTS];
 static uint8_t emitter_mask_all_slots;
 static bool brown_out_by_bank[PHOTON_SENSORSCAN_MAX_BANKS];
 static bool crcerr_fuse_by_bank[PHOTON_SENSORSCAN_MAX_BANKS];
-static uint32_t settle_time_us;  // Time to wait after setting an emitter GPIO high, before starting an ADC Capture. 
+static uint32_t settle_time_us;  // Time to wait after setting an emitter GPIO high, before starting an ADC Capture.
+static uint8_t osr_mode;  // Oversampling ratio: 0=none, 1=2x, 2=4x, 3=8x, 4=16x, 5=32x, 6=64x, 7=128x 
 // Dummy transmit bytes used while clocking out ADC conversion data.
 static const uint8_t adc_read_clock_2b[2] = {0x00, 0x00};
 
@@ -451,7 +452,14 @@ static inline void delay_microseconds(uint32_t us) {
 }
 
 static inline uint16_t decode12(const uint8_t *buf) {
-    return (uint16_t)(((((uint16_t)buf[0] << 8) | buf[1]) >> 4) & 0x0FFF);
+    // When OSR is disabled (osr_mode == 0), ADC outputs 12-bit data in bits [15:4]
+    // When OSR is enabled (osr_mode > 0), ADC outputs 16-bit data in bits [15:0]
+    uint16_t raw = (uint16_t)((uint16_t)buf[0] << 8) | buf[1];
+    if (osr_mode == 0) {
+        return (raw >> 4) & 0x0FFF;  // 12-bit mode: right-shift by 4
+    } else {
+        return raw;  // 16-bit mode: use all bits
+    }
 }
 
 typedef struct {
@@ -568,12 +576,12 @@ static inline bool reset_bank_once(uint8_t bank) {
 
 static inline bool configure_bank_after_reset(uint8_t bank) {
     return bank_clear_bits(bank, TLA25x8_REG_SEQUENCE_CFG, TLA25x8_SEQ_MODE_MASK) &&  // Manual Mode
-           bank_set_bits(bank, TLA25x8_REG_PIN_CFG, emitter_mask_all_slots) &&  // Configure GPIO Outputs, pp. 15 
+           bank_set_bits(bank, TLA25x8_REG_PIN_CFG, emitter_mask_all_slots) &&  // Configure GPIO Outputs, pp. 15
            bank_set_bits(bank, TLA25x8_REG_GPIO_CONFIG, emitter_mask_all_slots) &&
            bank_set_bits(bank, TLA25x8_REG_GPIO_DRIVE_CFG, emitter_mask_all_slots) &&
            bank_clear_bits(bank, TLA25x8_REG_GPO_VALUE, emitter_mask_all_slots) &&  // Unnecessary, but set emitters to off/low
            bank_write_register(bank, TLA25x8_REG_DATA_CFG, 0x00) &&  //Unnecessary
-           bank_write_register(bank, TLA25x8_REG_OSR_CONFIG, 0x00); //Unnecessary
+           bank_write_register(bank, TLA25x8_REG_OSR_CONFIG, osr_mode & 0x07);  // Configure oversampling ratio
 }
 
 static inline bool refresh_bank_status(uint8_t bank) {
@@ -725,69 +733,6 @@ static void acquire_u32_buffer_view(mp_obj_t buffer_obj, size_t min_len, u32_buf
     }
 }
 
-static inline bool neighbor_is_active_for_guard(
-    int16_t neighbor_idx,
-    uint16_t active_sensors,
-    const u8_buffer_view_t *sensor_disabled,
-    const u16_buffer_view_t *sensor_min,
-    const u16_buffer_view_t *sensor_max,
-    const u16_buffer_view_t *latest_values,
-    const u8_buffer_view_t *sensor_polarity,
-    uint16_t min_event_range,
-    uint8_t adjacent_guard_pct) {
-    if (neighbor_idx < 0 || (uint16_t)neighbor_idx >= active_sensors) {
-        return false;
-    }
-    size_t idx = (size_t)neighbor_idx;
-    if (sensor_disabled->ptr[idx]) {
-        return false;
-    }
-
-    uint16_t neighbor_min = sensor_min->ptr[idx];
-    uint16_t neighbor_max = sensor_max->ptr[idx];
-    uint16_t neighbor_val = latest_values->ptr[idx];
-    uint16_t neighbor_low = neighbor_min < neighbor_val ? neighbor_min : neighbor_val;
-    uint16_t neighbor_high = neighbor_max > neighbor_val ? neighbor_max : neighbor_val;
-    uint16_t neighbor_rng = neighbor_high - neighbor_low;
-    if (neighbor_rng < min_event_range) {
-        return false;
-    }
-
-    if (sensor_polarity->ptr[idx] != 0) {
-        uint16_t threshold = (uint16_t)(neighbor_high - ((uint32_t)neighbor_rng * adjacent_guard_pct) / 100u);
-        return neighbor_val <= threshold;
-    }
-    uint16_t threshold = (uint16_t)(neighbor_low + ((uint32_t)neighbor_rng * adjacent_guard_pct) / 100u);
-    return neighbor_val >= threshold;
-}
-
-static inline bool should_update_max_for_sensor(
-    uint16_t idx,
-    uint16_t active_sensors,
-    const u8_buffer_view_t *sensor_disabled,
-    const u16_buffer_view_t *sensor_min,
-    const u16_buffer_view_t *sensor_max,
-    const u16_buffer_view_t *latest_values,
-    const u8_buffer_view_t *sensor_polarity,
-    uint16_t min_event_range,
-    uint8_t adjacent_guard_pct) {
-    uint16_t rng = sensor_max->ptr[idx] - sensor_min->ptr[idx];
-    if (rng < min_event_range) {
-        return true;
-    }
-    if (neighbor_is_active_for_guard(
-        (int16_t)idx - 1, active_sensors, sensor_disabled, sensor_min,
-        sensor_max, latest_values, sensor_polarity, min_event_range, adjacent_guard_pct)) {
-        return false;
-    }
-    if (neighbor_is_active_for_guard(
-        (int16_t)idx + 1, active_sensors, sensor_disabled, sensor_min,
-        sensor_max, latest_values, sensor_polarity, min_event_range, adjacent_guard_pct)) {
-        return false;
-    }
-    return true;
-}
-
 static inline void write_sensor_value(
     readings_buffer_view_t *view, uint8_t bank, uint8_t slot, uint16_t value) {
     size_t index = sensor_value_index(bank, slot);
@@ -909,6 +854,7 @@ static void clear_driver_state(void) {
     readings_buffer_is_bytes = false;
     readings_buffer_entry_count = 0;
     settle_time_us = 0;
+    osr_mode = 0;
     emitter_mask_all_slots = 0;
     memset(adc_channel_by_slot, 0, sizeof(adc_channel_by_slot));
     memset(emitter_mask_by_slot, 0, sizeof(emitter_mask_by_slot));
@@ -997,6 +943,10 @@ static inline uint16_t read_sensor_core(uint8_t bank, uint8_t slot) {
     // Frame 1: write MANUAL_CHID (select channel)
     // Frame 2: read/discard prior conversion
     // Frame 3: read selected channel conversion
+    //
+    // When OSR is enabled, the ADC accumulates 2^osr_mode conversion cycles.
+    // We clock additional dummy data frames between the prime read and the
+    // final read so the oversampled result is ready when we capture it.
     debug_set_error(PHOTON_SENSORSCAN_DEBUG_ERR_SCAN_SELECT_CHANNEL);
     if (!write_register3(spi, cs, TLA25x8_OP_REGISTER_WRITE, TLA25x8_REG_CHANNEL_SEL, adc_channel & 0x0F)) {
         if (emitter_mask != 0) {
@@ -1013,6 +963,27 @@ static inline uint16_t read_sensor_core(uint8_t bank, uint8_t slot) {
         (void)refresh_bank_status(bank);
         mp_raise_RuntimeError(PHOTON_SENSORSCAN_ERR_SPI_TRANSFER_RUNTIME);
     }
+
+    if (osr_mode > 0) {
+        // With OSR enabled, the ADC accumulates 2^osr_mode internal conversions.
+        // Each SPI data frame (transfer2) clocks one conversion cycle.
+        // The channel select + prime read above already account for 2 cycles,
+        // so we need (2^osr_mode - 2) additional dummy data frames, then one
+        // more final read to get the completed oversampled result.
+        // We use transfer2 (pure data clocks) rather than register reads to
+        // avoid disrupting the ADC output pipeline.
+        uint16_t extra_frames = (uint16_t)((1u << osr_mode) - 2u);
+        for (uint16_t i = 0; i < extra_frames; i++) {
+            if (!transfer2(spi, cs, adc_read_clock_2b, adc_result_2b)) {
+                if (emitter_mask != 0) {
+                    (void)write_register3(spi, cs, TLA25x8_OP_BIT_CLEAR, TLA25x8_REG_GPO_VALUE, emitter_mask);
+                }
+                (void)refresh_bank_status(bank);
+                mp_raise_RuntimeError(PHOTON_SENSORSCAN_ERR_SPI_TRANSFER_RUNTIME);
+            }
+        }
+    }
+
     debug_set_error(PHOTON_SENSORSCAN_DEBUG_ERR_SCAN_DATA_READ);
     if (!transfer2(spi, cs, adc_read_clock_2b, adc_result_2b)) {
         if (emitter_mask != 0) {
@@ -1043,12 +1014,13 @@ void common_hal_photonsensorscan_init(
     const uint8_t bank_spi_bus_in[PHOTON_SENSORSCAN_MAX_BANKS],
     uint8_t slot_count_in, const uint8_t adc_channels_in[PHOTON_SENSORSCAN_MAX_SLOTS], const int8_t emitter_bits_in[PHOTON_SENSORSCAN_MAX_SLOTS],
     mp_obj_t readings_buffer,
-    uint32_t settle_us_in, uint32_t baudrate, uint8_t polarity, uint8_t phase) {
+    uint32_t settle_us_in, uint32_t baudrate, uint8_t polarity, uint8_t phase, uint8_t osr_mode_in) {
 
     debug_reset_state();
     spi_runtime_baudrate = baudrate;
     spi_runtime_polarity = polarity;
     spi_runtime_phase = phase;
+    osr_mode = osr_mode_in & 0x07;  // Mask to 3 bits (0-7)
 
     if (bank_count_in < 1 || bank_count_in > PHOTON_SENSORSCAN_MAX_BANKS) {
         mp_raise_ValueError(MP_ERROR_TEXT("invalid bank_count"));
@@ -1325,7 +1297,6 @@ size_t common_hal_photonsensorscan_process_scan_events(
     mp_int_t min_event_range_in,
     mp_int_t release_pct_in,
     mp_int_t activation_pct_in,
-    mp_int_t adjacent_guard_pct_in,
     mp_int_t velocity_window_pct_in,
     mp_int_t strike_window_pct_in,
     mp_obj_t event_words_obj) {
@@ -1337,13 +1308,11 @@ size_t common_hal_photonsensorscan_process_scan_events(
     uint16_t active_sensors = (uint16_t)mp_arg_validate_int_range(
         active_sensors_in, 0, (mp_int_t)readings_buffer_entry_count, MP_QSTR_active_sensors);
     uint16_t min_event_range = (uint16_t)mp_arg_validate_int_range(
-        min_event_range_in, 0, 4095, MP_QSTR_min_event_range);
+        min_event_range_in, 0, 0xFFFF, MP_QSTR_min_event_range);
     uint8_t release_pct = (uint8_t)mp_arg_validate_int_range(
         release_pct_in, 0, 100, MP_QSTR_release_pct);
     uint8_t activation_pct = (uint8_t)mp_arg_validate_int_range(
         activation_pct_in, 0, 100, MP_QSTR_activation_pct);
-    uint8_t adjacent_guard_pct = (uint8_t)mp_arg_validate_int_range(
-        adjacent_guard_pct_in, 0, 100, MP_QSTR_adjacent_guard_pct);
     uint8_t velocity_window_pct = (uint8_t)mp_arg_validate_int_range(
         velocity_window_pct_in, 0, 100, MP_QSTR_velocity_window_pct);
     uint8_t strike_window_pct = (uint8_t)mp_arg_validate_int_range(
@@ -1396,9 +1365,7 @@ size_t common_hal_photonsensorscan_process_scan_events(
         if (value < sensor_min.ptr[sensor_idx]) {
             sensor_min.ptr[sensor_idx] = value;
         }
-        if (value > sensor_max.ptr[sensor_idx] && should_update_max_for_sensor(
-            sensor_idx, active_sensors, &sensor_disabled, &sensor_min, &sensor_max,
-            &latest_values, &sensor_polarity, min_event_range, adjacent_guard_pct)) {
+        if (value > sensor_max.ptr[sensor_idx]) {
             sensor_max.ptr[sensor_idx] = value;
         }
 
